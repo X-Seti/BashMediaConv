@@ -77,14 +77,15 @@ clean_filename() {
 # Remove associated metadata files
 remove_assoc_metadata_files() {
     local file="$1"
+    
+    # Only remove metadata files if both flags are set
+    if [ "$rm_metadata_files" = false ] || [ "$clean_filenames" = false ]; then
+        return 0
+    fi
+    
     local dir=$(dirname "$file")
     local filename=$(basename "$file" .*) # Get filename without extension
     local base_filename=$(echo "$filename" | sed 's/\.[^.]*$//')  # Remove resolution/quality part
-
-    # If flag is not set, return
-    if [ "$rm_metadata_files" = false ]; then
-        return 0
-    fi
 
     # Remove .nfo files with various naming patterns
     local nfo_patterns=(
@@ -601,4 +602,3 @@ main() {
 
 # Call main function with all arguments
 main "$@"
-
