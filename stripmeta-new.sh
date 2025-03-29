@@ -3,7 +3,7 @@
 #Dependencies: "exiftool" "mkvpropedit" "sha256sum" "ffmpeg"
 
 # Script version
-SCRIPT_VERSION="1.5.0"
+SCRIPT_VERSION="1.5.1"
 
 # Global variables
 clean_filenames=false
@@ -290,6 +290,55 @@ log_processed_file() {
     echo "$file_hash $abs_path" >> "$processing_log"
 }
 
+# Process MP3 audio files
+process_mp3() {
+    local file="$1"
+    local backup_dir="${2:-./backups}"
+
+    # Check if file has been processed
+    if is_file_processed "$file"; then
+        echo "Skipping already processed MP3 file: $file"
+        return 0
+    fi
+
+    # Clean filename first
+    file=$(clean_filename "$file")
+
+    echo "Processing MP3: $file"
+    if [ "$dry_run" = "true" ]; then
+        echo "[DRY RUN] Would process MP3: $file"
+        return 0
+    fi
+
+    # Backup the original file if backups are enabled
+    if [ "$backups" = "true" ]; then
+        backup_file "$file" "$backup_dir"
+    fi
+
+    # Use exiftool to strip metadata from MP3
+    if exiftool -overwrite_original -All= "$file"; then
+        echo "✓ Processed MP3 with exiftool: $file"
+        # Log processed file
+        log_processed_file "$file"
+        return 0
+    else
+        echo "✗ Failed to process MP3 with exiftool: $file"
+        
+        # Alternative: Try ffmpeg as a fallback
+        local temp_file="${file%.*}_stripped.mp3"
+        if ffmpeg -i "$file" -c:a copy -map_metadata -1 "$temp_file"; then
+            # Replace original file
+            mv "$temp_file" "$file"
+            echo "✓ Processed MP3 with ffmpeg: $file"
+            # Log processed file
+            log_processed_file "$file"
+            return 0
+        fi
+        
+        return 1
+    fi
+}
+
 # Function to process files in a directory
 process_files() {
     local dir="${1:-.}"  # Use current directory if no argument provided
@@ -297,7 +346,7 @@ process_files() {
     # First, clean up metadata files in the directory
     cleanup_directory_metadata "$dir"
 
-    # Find video files based on extensions and recursion flag
+    # Find video and audio files based on extensions and recursion flag
     local find_cmd=("find" "$dir" "-type" "f")
     if [ "$recursive" = false ]; then
         find_cmd+=("-maxdepth" "1")
@@ -310,7 +359,8 @@ process_files() {
         "-name" "*.m4v" "-o"
         "-name" "*.mkv" "-o"
         "-name" "*.flv" "-o"
-        "-name" "*.mov"
+        "-name" "*.mov" "-o"
+        "-name" "*.mp3"
     \))
 
     # Process each found file
@@ -318,6 +368,10 @@ process_files() {
         ext="${file##*.}"
         ext=$(echo "$ext" | tr '[:upper:]' '[:lower:]')
         case "$ext" in
+            mp3)
+                # Process MP3 audio files
+                process_mp3 "$file" "$backup_dir"
+                ;;
             m4v|mkv|mp4)
                 # Do not convert these file types
                 strip_metadata "$file" "$backup_dir"
@@ -609,7 +663,7 @@ main() {
                 recursive=true
             fi
         fi
-        read -p "Process all video files, Continue? (y/N): " confirm
+        read -p "Process all video and audio files, Continue? (y/N): " confirm
         if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
             echo "Operation cancelled."
             echo "Press Enter to exit..."
@@ -630,6 +684,12 @@ main() {
                 ext="${path##*.}"
                 ext=$(echo "$ext" | tr '[:upper:]' '[:lower:]')
                 case "$ext" in
+                    mp3)
+                        # First clean up the directory of the file
+                        cleanup_directory_metadata "$(dirname "$path")"
+                        # Process MP3 audio file
+                        process_mp3 "$path" "$backup_dir"
+                        ;;
                     mpeg|mpg|mp4|avi|m4v|flv|mov)
                         # First clean up the directory of the file
                         cleanup_directory_metadata "$(dirname "$path")"
