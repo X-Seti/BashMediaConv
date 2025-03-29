@@ -1,5 +1,5 @@
 # Media File Metadata Stripper
-# Looking for a better name, CowStripper?
+Looking for a better name, CowStripper?
 
 **Version:** 1.4.1  
 **Author:** (X-Seti) Mooheda  
