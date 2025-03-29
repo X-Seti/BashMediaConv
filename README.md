@@ -1,7 +1,7 @@
 # Media File Metadata Stripper
 Looking for a better name, CowStripper?
 
-**Version:** 1.5.0  
+**Version:** 1.5.1 
 **Author:** (X-Seti) Mooheda  
 **Date:** March 30, 2025
 
@@ -19,7 +19,7 @@ The script requires the following tools to be installed:
 
 ## Features
 
-- Removes metadata from video files
+- Removes metadata from video and mp3 audio files
 - Cleans filenames (replaces dots with spaces)
 - Renames file extensions (e.g., to .m4v)
 - Creates backups of original files
