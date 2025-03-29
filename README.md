@@ -1,7 +1,7 @@
 # Video File Metadata Stripper
 
 **Version:** 1.4.1  
-**Author:** Moocow Mooheda  
+**Author:** (X-Seti) Mooheda  
 **Date:** March 25, 2025
 
 ## Overview
