@@ -19,6 +19,9 @@ When processing a single file, it first cleans up the directory containing that 
 SCRIPT_VERSION="1.4.3"
 Mar 29 2025;
 The key change in the script is in the remove_assoc_metadata_files function. I've modified it to only proceed with removing metadata files when both the rm_metadata_files and clean_filenames flags are set to true.
+"The user has opted to clean filenames (replace dots with spaces)
+AND the user has opted to remove metadata files"
+If either condition is not met, the function will exit early without removing any files.
 
 
 SCRIPT_VERSION="1.4.1"
