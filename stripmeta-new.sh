@@ -1,9 +1,9 @@
 #!/bin/bash
-#(X-Seti) Mooheda 29Mar25
+#Moocow Mooheda 25/Mar25
 #Dependencies: "exiftool" "mkvpropedit" "sha256sum" "ffmpeg"
 
 # Script version
-SCRIPT_VERSION="1.4.2"
+SCRIPT_VERSION="1.5.0"
 
 # Global variables
 clean_filenames=false
@@ -74,18 +74,58 @@ clean_filename() {
     echo "$file"
 }
 
-# Remove associated metadata files
-remove_assoc_metadata_files() {
-    local file="$1"
-    
-    # Only remove metadata files if both flags are set
-    if [ "$rm_metadata_files" = false ] || [ "$clean_filenames" = false ]; then
+# Remove all .nfo and thumb.jpg files in directory
+cleanup_directory_metadata() {
+    local dir="$1"
+
+    if [ "$rm_metadata_files" = false ]; then
         return 0
     fi
-    
+
+    echo "Cleaning metadata files in directory: $dir"
+
+    # Find and remove .nfo files
+    find "$dir" -maxdepth 1 -name "*.nfo" -type f | while read -r nfo_file; do
+        if [ "$dry_run" = "true" ]; then
+            echo "[DRY RUN] Would remove NFO file: $nfo_file"
+        else
+            rm "$nfo_file"
+            echo "Removed NFO file: $nfo_file"
+        fi
+    done
+
+    # Find and remove thumb.jpg files
+    find "$dir" -maxdepth 1 -name "*thumb.jpg" -type f | while read -r thumb_file; do
+        if [ "$dry_run" = "true" ]; then
+            echo "[DRY RUN] Would remove thumbnail: $thumb_file"
+        else
+            rm "$thumb_file"
+            echo "Removed thumbnail: $thumb_file"
+        fi
+    done
+
+    # Also try to find and remove any other .jpg files that might be thumbs
+    find "$dir" -maxdepth 1 -name "*.jpg" -type f -size -100k | while read -r jpg_file; do
+        if [ "$dry_run" = "true" ]; then
+            echo "[DRY RUN] Would remove potential thumbnail: $jpg_file"
+        else
+            rm "$jpg_file"
+            echo "Removed potential thumbnail: $jpg_file"
+        fi
+    done
+}
+
+# Remove associated metadata files for a specific video file
+remove_assoc_metadata_files() {
+    local file="$1"
     local dir=$(dirname "$file")
     local filename=$(basename "$file" .*) # Get filename without extension
     local base_filename=$(echo "$filename" | sed 's/\.[^.]*$//')  # Remove resolution/quality part
+
+    # If flag is not set, return
+    if [ "$rm_metadata_files" = false ]; then
+        return 0
+    fi
 
     # Remove .nfo files with various naming patterns
     local nfo_patterns=(
@@ -99,6 +139,7 @@ remove_assoc_metadata_files() {
         "$dir/$filename-thumb.jpg"          # With hyphen
         "$dir/$filename.jpg"                # Direct match
         "$dir/$base_filename"*"-thumb.jpg"  # Wildcard match
+        "$dir/$base_filename"*".jpg"        # Any jpg with base name
         "$dir/thumb.jpg"                    # Generic thumb
     )
 
@@ -252,6 +293,10 @@ log_processed_file() {
 # Function to process files in a directory
 process_files() {
     local dir="${1:-.}"  # Use current directory if no argument provided
+
+    # First, clean up metadata files in the directory
+    cleanup_directory_metadata "$dir"
+
     # Find video files based on extensions and recursion flag
     local find_cmd=("find" "$dir" "-type" "f")
     if [ "$recursive" = false ]; then
@@ -286,6 +331,16 @@ process_files() {
                 ;;
         esac
     done < <("${find_cmd[@]}")
+
+    # If recursive, process subdirectories separately
+    if [ "$recursive" = true ]; then
+        find "$dir" -mindepth 1 -type d | while read -r subdir; do
+            if [ "$verbose" = "true" ]; then
+                echo "Processing subdirectory: $subdir"
+            fi
+            cleanup_directory_metadata "$subdir"
+        done
+    fi
 }
 
 # Function to strip metadata from video files
@@ -561,6 +616,10 @@ main() {
             read
             exit 0
         fi
+
+        # Clean up current directory first
+        cleanup_directory_metadata "."
+
         # Process files in current directory
         process_files
     else
@@ -572,12 +631,16 @@ main() {
                 ext=$(echo "$ext" | tr '[:upper:]' '[:lower:]')
                 case "$ext" in
                     mpeg|mpg|mp4|avi|m4v|flv|mov)
+                        # First clean up the directory of the file
+                        cleanup_directory_metadata "$(dirname "$path")"
                         strip_metadata "$path" "$backup_dir"
                         if [ "$conv_oldfileformats" = "true" ]; then
                             convert_to_mp4 "$path" "$backup_dir"
                         fi
                         ;;
                     mkv)
+                        # First clean up the directory of the file
+                        cleanup_directory_metadata "$(dirname "$path")"
                         process_mkv "$path" "$backup_dir"
                         ;;
                     *)
@@ -585,6 +648,9 @@ main() {
                         ;;
                 esac
             elif [ -d "$path" ]; then
+                # Clean up directory first
+                cleanup_directory_metadata "$path"
+
                 # Process files in specified directory
                 echo "Processing files in directory: $path"
                 process_files "$path"
