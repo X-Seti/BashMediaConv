@@ -1,9 +1,9 @@
 #!/bin/bash
-#(X-Seti) Mooheda 29/Mar25
+#(X-Seti) Mooheda 29Mar25
 #Dependencies: "exiftool" "mkvpropedit" "sha256sum" "ffmpeg"
 
 # Script version
-SCRIPT_VERSION="1.4.1"
+SCRIPT_VERSION="1.4.2"
 
 # Global variables
 clean_filenames=false
@@ -75,7 +75,7 @@ clean_filename() {
 }
 
 # Remove associated metadata files
-re_assoc_metadata_files() {
+remove_assoc_metadata_files() {
     local file="$1"
     local dir=$(dirname "$file")
     local filename=$(basename "$file" .*) # Get filename without extension
@@ -83,7 +83,7 @@ re_assoc_metadata_files() {
 
     # If flag is not set, return
     if [ "$rm_metadata_files" = false ]; then
-    return 0
+        return 0
     fi
 
     # Remove .nfo files with various naming patterns
@@ -105,8 +105,12 @@ re_assoc_metadata_files() {
     for pattern in "${nfo_patterns[@]}"; do
         for nfo in $pattern; do
             if [ -f "$nfo" ]; then
-                rm "$nfo"
-                echo "Removed NFO file: $nfo"
+                if [ "$dry_run" = "true" ]; then
+                    echo "[DRY RUN] Would remove NFO file: $nfo"
+                else
+                    rm "$nfo"
+                    echo "Removed NFO file: $nfo"
+                fi
             fi
         done
     done
@@ -115,8 +119,12 @@ re_assoc_metadata_files() {
     for pattern in "${thumb_patterns[@]}"; do
         for thumb in $pattern; do
             if [ -f "$thumb" ]; then
-                rm "$thumb"
-                echo "Removed thumbnail: $thumb"
+                if [ "$dry_run" = "true" ]; then
+                    echo "[DRY RUN] Would remove thumbnail: $thumb"
+                else
+                    rm "$thumb"
+                    echo "Removed thumbnail: $thumb"
+                fi
             fi
         done
     done
@@ -294,6 +302,10 @@ strip_metadata() {
     # Clean filename first
     file=$(clean_filename "$file")
     echo "Processing: $file"
+
+    # Remove associated metadata files BEFORE processing the video file
+    remove_assoc_metadata_files "$file"
+
     if [ "$dry_run" = "true" ]; then
         echo "[DRY RUN] Would strip metadata from: $file"
         return 0
@@ -319,8 +331,6 @@ strip_metadata() {
             echo "✓ Processed with exiftool: $file"
             # Log processed file
             log_processed_file "$file"
-            # Remove associated metadata files
-            re_assoc_metadata_files "$file"
             return 0
         fi
     fi
@@ -334,8 +344,6 @@ strip_metadata() {
             echo "✓ Processed AVI with ffmpeg: $file"
             # Log processed file
             log_processed_file "$file"
-            # Remove associated metadata files
-            re_assoc_metadata_files "$file"
             return 0
         else
             echo "✗ Failed to process AVI with ffmpeg: $file"
@@ -368,6 +376,9 @@ process_mkv() {
     # Clean filename first
     file=$(clean_filename "$file")
 
+    # Remove associated metadata files BEFORE processing the MKV file
+    remove_assoc_metadata_files "$file"
+
     echo "Processing MKV: $file"
     if [ "$dry_run" = "true" ]; then
         echo "[DRY RUN] Would process MKV: $file"
@@ -392,8 +403,6 @@ process_mkv() {
         echo "✓ Processed with mkvpropedit: $file"
         # Log processed file
         log_processed_file "$file"
-        # Remove associated metadata files
-        re_assoc_metadata_files "$file"
     else
         echo "✗ Failed to process with mkvpropedit: $file"
         return 1
@@ -592,3 +601,4 @@ main() {
 
 # Call main function with all arguments
 main "$@"
+
