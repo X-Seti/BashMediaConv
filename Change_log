@@ -1,5 +1,20 @@
 Change Log - since Github usage:
 
+SCRIPT_VERSION="1.5.1"
+Mar 30 2025;
+Added a dedicated process_mp3() function to handle MP3 audio files:
+Uses exiftool as the primary method to strip metadata
+Includes a fallback to ffmpeg if exiftool fails
+Maintains consistent backup and logging behavior
+Updated the file finder in process_files() to include MP3 files:
+Added -name "*.mp3" to the find command to locate MP3 files
+Added a case statement to route MP3 files to the new processing function
+Added MP3 handling in the command-line argument processor:
+Updated the file type detection in the main function to recognize MP3s
+Added proper case handling for MP3 files
+Changed "Process all video files" to "Process all video and audio files"
+
+
 SCRIPT_VERSION="1.5.0"
 Mar 30 2025;
 Improved the file-specific metadata removal:
@@ -19,8 +34,7 @@ When processing a single file, it first cleans up the directory containing that 
 SCRIPT_VERSION="1.4.3"
 Mar 29 2025;
 The key change in the script is in the remove_assoc_metadata_files function. I've modified it to only proceed with removing metadata files when both the rm_metadata_files and clean_filenames flags are set to true.
-"The user has opted to clean filenames (replace dots with spaces)
-AND the user has opted to remove metadata files"
+The user has opted to clean filenames (replace dots with spaces) AND the user has opted to remove metadata files
 If either condition is not met, the function will exit early without removing any files.
 
 
