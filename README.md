@@ -1,9 +1,9 @@
 # Media File Metadata Stripper
 Looking for a better name, CowStripper?
 
-**Version:** 1.4.1  
+**Version:** 1.5.0  
 **Author:** (X-Seti) Mooheda  
-**Date:** March 25, 2025
+**Date:** March 30, 2025
 
 ## Overview
 
