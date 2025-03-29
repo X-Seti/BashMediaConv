@@ -1,5 +1,5 @@
 #!/bin/bash
-#Moocow Mooheda 25/Mar25
+#(X-Seti) Mooheda 29/Mar25
 #Dependencies: "exiftool" "mkvpropedit" "sha256sum" "ffmpeg"
 
 # Script version
