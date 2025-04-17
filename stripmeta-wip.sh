@@ -1,9 +1,9 @@
 #!/bin/bash
-#Moocow Mooheda 09/Apr25
+#Moocow Mooheda 16/Apr25
 #Dependencies: "exiftool" "mkvpropedit" "sha256sum" "ffmpeg"
 
 # Script version - date
-SCRIPT_VERSION="1.8.0 - 10-04-25"
+SCRIPT_VERSION="1.8.0 - 16-04-25"
 
 # Global variables
 clean_filenames=false
@@ -40,7 +40,7 @@ declare -A audio_quality=(
   ["aac"]="4"       # 1-5 (higher is better)
 )
 
-parallel_processing=false
+parallel_processing=true
 max_parallel_jobs=4
 
 improve_io_performance() {
