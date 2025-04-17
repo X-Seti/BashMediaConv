@@ -1,13 +1,13 @@
 # Media File Metadata Stripper
 Looking for a better name, CowStripper?
 
-**Version:** 1.5.1 
+**Version:** 1.8.0 
 **Author:** (X-Seti) Mooheda  
-**Date:** March 30, 2025
+**Date:** April 17, 2025
 
 ## Overview
 
-This script removes metadata from video files, helping to ensure privacy and clean up media files. It supports various video formats, including MP4, MKV, AVI, MPG, MPEG, FLV, MOV, and M4V files.
+This script removes metadata from video files, helping to ensure privacy and clean up media files. It supports various audio and video formats, including MP3, AAC, FLAC, WAV, OGG, MP4, MKV, AVI, MPG, MPEG, FLV, MOV, and M4V files.
 
 ## Dependencies
 
@@ -17,9 +17,12 @@ The script requires the following tools to be installed:
 - `sha256sum` - For file tracking
 - `ffmpeg` - For video conversion
 
+## Changes 
+- Parallel Processing options
+
 ## Features
 
-- Removes metadata from video and mp3 audio files
+- Removes metadata from video and audio files
 - Cleans filenames (replaces dots with spaces)
 - Renames file extensions (e.g., to .m4v)
 - Creates backups of original files
@@ -35,13 +38,13 @@ The script requires the following tools to be installed:
 Run the script without arguments to use the interactive mode:
 
 ```bash
-./stripmeta-new.sh
+./stripmeta-wip.sh
 ```
 
 The script will prompt you with options for:
 - Cleaning filenames
 - Renaming file extensions
-- Converting to MP4
+- Converting audio to mp3, aac 
 - Converting specific old format files
 - Creating backups
 - Removing metadata files
@@ -50,7 +53,7 @@ The script will prompt you with options for:
 ### Command Line Options
 
 ```bash
-./stripmeta-new.sh [options] [file/directory paths...]
+./stripmeta-wip.sh [options] [file/directory paths...]
 ```
 
 #### Available Options:
@@ -63,7 +66,7 @@ The script will prompt you with options for:
 - `--clean-filenames`: Replace dots with spaces in filenames
 - `--rename`: Rename processed files to .m4v extension
 - `--recursive`: Process files in subdirectories
-- `--convert-to-mp4`: Convert all supported video files to MP4
+- `--convert-audio`: Convert all supported audio files to mp3, aac
 - `--conv-oldfileformats`: Convert only older formats (AVI, MPG, FLV, MOV, MPEG) to MP4
 - `--remove-metadata-files`: Remove associated .nfo and thumbnail files
 - `--reset-log`: Reset the processing log file
@@ -88,7 +91,7 @@ You can also drag and drop files or folders onto the script. In drag-and-drop mo
 
 4. **`process_mkv()`**: Specifically handles MKV files using mkvpropedit.
 
-5. **`convert_to_mp4()`**: Converts video files to MP4 format using ffmpeg.
+5. **`convert_audio()`**: Converts audio files to MP3 format using ffmpeg.
 
 ### Helper Functions
 
@@ -117,6 +120,7 @@ The script maintains a log file (`.processed_files.log`) that records the SHA256
 - **MP4, M4V, MKV**: Processed directly with respective tools
 - **AVI**: Processed using ffmpeg
 - **MPG, MPEG, FLV, MOV**: Processed with exiftool and can be converted to MP4
+- **OGG, AAC, WAV, IFF, MP3**: Processed using ffmpeg
 
 ## Notes
 
@@ -128,15 +132,15 @@ The script maintains a log file (`.processed_files.log`) that records the SHA256
 
 Process a single file:
 ```bash
-./stripmeta-new.sh myvideo.mkv
+./stripmeta-wip.sh myvideo.mkv
 ```
 
 Process all videos in a directory recursively:
 ```bash
-./stripmeta-new.sh --recursive /path/to/videos
+./stripmeta-wip.sh --recursive /path/to/videos
 ```
 
 Process and convert older format videos:
 ```bash
-./stripmeta-new.sh --conv-oldfileformats myvideo.avi
+./stripmeta-wip.sh --conv-oldfileformats myvideo.avi
 ```
