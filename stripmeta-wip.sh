@@ -1,9 +1,9 @@
 #!/bin/bash
-#Moocow Mooheda 25/Mar25
+#Moocow Mooheda 09/Apr25
 #Dependencies: "exiftool" "mkvpropedit" "sha256sum" "ffmpeg"
 
-# Script version
-SCRIPT_VERSION="1.7.0"
+# Script version - date
+SCRIPT_VERSION="1.8.0 - 10-04-25"
 
 # Global variables
 clean_filenames=false
@@ -16,6 +16,9 @@ recursive=false
 convert_to_mp4=false
 conv_oldfileformats=false
 rm_metadata_files=false
+files_processed=0
+files_failed=0
+bytes_processed=0
 backup_dir="./backups"
 newfileext="m4v"
 processing_log=".processed_files.log"
@@ -30,36 +33,147 @@ declare -A audio_bitrates=(
   ["wav"]="1536k"
   ["m4a"]="256k"
 )
+declare -A audio_quality=(
+  ["mp3"]="0"       # 0-9 (lower is better)
+  ["flac"]="8"      # 0-8 (higher is better)
+  ["ogg"]="5"       # -1 to 10 (higher is better)
+  ["aac"]="4"       # 1-5 (higher is better)
+)
 
-# Check for required dependencies
+parallel_processing=false
+max_parallel_jobs=4
+
+improve_io_performance() {
+    # Increase buffer size for better I/O performance
+    if command -v ionice >/dev/null 2>&1; then
+        ionice -c 2 -n 7 -p $$
+    fi
+
+    # Set higher buffer sizes for better file I/O
+    if command -v dd >/dev/null 2>&1; then
+        export DD_OPTS="bs=64k"
+    fi
+}
+
+improve_io_performance
+
 check_dependencies() {
     local deps=("exiftool" "mkvpropedit" "sha256sum" "ffmpeg")
     local missing=()
+    local outdated=()
+
     for cmd in "${deps[@]}"; do
         if ! command -v "$cmd" >/dev/null 2>&1; then
             missing+=("$cmd")
+        else
+            # Check versions for critical dependencies
+            case "$cmd" in
+                ffmpeg)
+                    # Check if ffmpeg version is at least 4.0
+                    version=$(ffmpeg -version | head -n1 | awk '{print $3}' | cut -d. -f1)
+                    if [ -n "$version" ] && [ "$version" -lt 4 ]; then
+                        outdated+=("$cmd (version $version, recommended 4.0+)")
+                    fi
+                    ;;
+                exiftool)
+                    # Check if exiftool version is at least 12.0
+                    version=$(exiftool -ver | cut -d. -f1)
+                    if [ -n "$version" ] && [ "$version" -lt 12 ]; then
+                        outdated+=("$cmd (version $version, recommended 12.0+)")
+                    fi
+                    ;;
+            esac
         fi
     done
+
     if [ ${#missing[@]} -gt 0 ]; then
         echo "Error: Missing required dependencies: ${missing[*]}"
+        echo "Please install the missing dependencies and try again."
         echo "Press Enter to exit..."
         read
         exit 1
     fi
+
+    if [ ${#outdated[@]} -gt 0 ]; then
+        echo "Warning: Some dependencies are outdated: ${outdated[*]}"
+        echo "The script may not work correctly with older versions."
+        echo "Do you want to continue anyway? [y/N]"
+        read -r response
+        if [[ ! "$response" =~ ^[Yy]$ ]]; then
+            echo "Exiting. Please update the dependencies and try again."
+            exit 1
+        fi
+    fi
 }
 
-# Check if running in a terminal
+# Handle_error function
+handle_error() {
+    local error_code=$1
+    local error_message=$2
+    local operation=$3
+    local file=$4
+
+    echo "Error (code $error_code) during $operation: $error_message" >&2
+    echo "Failed to process: $file" >&2
+
+    # Log error to file
+    echo "$(date '+%Y-%m-%d %H:%M:%S') ERROR: $operation failed for $file: $error_message" >> "${processing_log%.log}_errors.log"
+
+    # Attempt recovery based on operation type
+    case "$operation" in
+        "metadata_removal")
+            echo "Attempting alternative method for metadata removal..."
+            # Try alternative method here
+            ;;
+    esac
+}
+
+rotate_logs() {
+    # Rotate logs if they get too big (>10MB)
+    if [ -f "$processing_log" ] && [ $(stat -c%s "$processing_log" 2>/dev/null || stat -f%z "$processing_log") -gt 10485760 ]; then
+        local timestamp=$(date +"%Y%m%d%H%M%S")
+        mv "$processing_log" "${processing_log}.${timestamp}"
+        echo "Log file rotated to ${processing_log}.${timestamp}"
+    fi
+}
+
 if [ -t 1 ]; then
     # Already in a terminal, continue normal execution
     : # no-op
 else
-    # Not in a terminal, launch a new terminal
-    x-terminal-emulator -e "$0" || \
-    gnome-terminal -- bash -c "$0; exec bash" || \
-    konsole -e bash "$0" || \
-    xterm -e bash "$0" || \
-    open -a Terminal "$0" || \
-    echo "Unable to open terminal"
+    # Try to detect the desktop environment
+    if [ -n "$XDG_CURRENT_DESKTOP" ]; then
+        case "$XDG_CURRENT_DESKTOP" in
+            GNOME|Unity)
+                gnome-terminal -- bash -c "$0 $*; exec bash" || xterm -e bash -c "$0 $*; exec bash"
+                ;;
+            KDE)
+                konsole -e bash -c "$0 $*; exec bash" || xterm -e bash -c "$0 $*; exec bash"
+                ;;
+            XFCE)
+                xfce4-terminal -e "bash -c \"$0 $*; exec bash\"" || xterm -e bash -c "$0 $*; exec bash"
+                ;;
+            *)
+                # Try common terminals
+                x-terminal-emulator -e "$0 $*" || \
+                gnome-terminal -- bash -c "$0 $*; exec bash" || \
+                konsole -e bash -c "$0 $*; exec bash" || \
+                xterm -e bash -c "$0 $*; exec bash" || \
+                open -a Terminal "$0" || \
+                echo "Unable to open terminal"
+                ;;
+        esac
+    elif [ "$(uname)" = "Darwin" ]; then
+        # macOS
+        open -a Terminal "$0"
+    else
+        # Try common terminals as fallback
+        x-terminal-emulator -e "$0 $*" || \
+        gnome-terminal -- bash -c "$0 $*; exec bash" || \
+        konsole -e bash -c "$0 $*; exec bash" || \
+        xterm -e bash -c "$0 $*; exec bash" || \
+        echo "Unable to open terminal"
+    fi
     exit 0
 fi
 
@@ -74,16 +188,261 @@ clean_filename() {
 
         # Replace dots with spaces in the filename, then add a dot before the ext
         local new_filename=$(echo "$name" | sed 's/\./ /g')."$extension"
+
+        # Handle special characters
+        new_filename=$(echo "$new_filename" | sed 's/[^[:alnum:][:space:]._-]/_/g')
+
         local new_path="$dir/$new_filename"
 
         # Only rename if the filename actually changes
         if [ "$filename" != "$new_filename" ]; then
-            mv "$file" "$new_path"
-            echo "Renamed: $file -> $new_path"
-            return 0
+            if [ "$dry_run" = "true" ]; then
+                echo "[DRY RUN] Would rename: $file -> $new_path"
+                echo "$file"
+                return 0
+            else
+                if mv "$file" "$new_path"; then
+                    echo "Renamed: $file -> $new_path"
+                    echo "$new_path"
+                    return 0
+                else
+                    echo "Failed to rename: $file"
+                    echo "$file"
+                    return 1
+                fi
+            fi
         fi
     fi
     echo "$file"
+}
+
+# Show progress
+show_progress() {
+    local current=$1
+    local total=$2
+    local width=50
+    local percent=$((current * 100 / total))
+    local completed=$((width * current / total))
+
+    printf "\r[%${completed}s%${((width - completed))}s] %d%% (%d/%d)" | tr ' ' '#' | tr '#' ' '
+    printf " %d%% (%d/%d)" "$percent" "$current" "$total"
+
+    if [ "$current" -eq "$total" ]; then
+        echo
+    fi
+}
+
+show_stats() {
+    echo "========== Processing Statistics =========="
+    echo "Files processed successfully: $files_processed"
+    echo "Files failed: $files_failed"
+    echo "Total data processed: $(numfmt --to=iec-i --suffix=B $bytes_processed)"
+    echo "========================================"
+}
+
+update_progress() {
+    local current=$1
+    local total=$2
+    local file=$3
+    local percent=$((current * 100 / total))
+
+    # Create a progress bar
+    local completed=$((percent / 2))
+    local remaining=$((50 - completed))
+
+    printf "\r[%${completed}s%${remaining}s] %3d%% - %s" | tr ' ' '#' | tr '#' ' '
+    printf " %3d%% - Processing: %s" "$percent" "$(basename "$file")"
+}
+
+check_for_updates() {
+    echo "Checking for script updates..."
+    # This would need to be customized based on where you host your script
+    # Example for a script hosted on GitHub:
+    if command -v curl >/dev/null 2>&1; then
+        latest_version=$(curl -s https://raw.githubusercontent.com/yourusername/stripmeta/main/version.txt)
+        if [ -n "$latest_version" ] && [ "$latest_version" != "$SCRIPT_VERSION" ]; then
+            echo "A new version ($latest_version) is available! Current version: $SCRIPT_VERSION"
+            echo "Visit https://github.com/yourusername/stripmeta to update"
+        else
+            echo "You are running the latest version: $SCRIPT_VERSION"
+        fi
+    else
+        echo "curl not found, cannot check for updates"
+    fi
+}
+
+prompt_for_save_config() {
+    read -p "Would you like to save these settings as default configuration? [y/N]: " save_config_response
+    if [[ "$save_config_response" =~ ^[Yy]$ ]]; then
+        save_config
+    else
+        # Still remember for next run
+        remember_last_choices
+    fi
+}
+
+# config file
+load_config() {
+    local config_file="$HOME/.stripmeta-config"
+
+    # Check if config file exists
+    if [ -f "$config_file" ]; then
+        if [ "$verbose" = "true" ]; then
+            echo "Loading configuration from $config_file"
+        fi
+        # Source the config file
+        . "$config_file"
+        return 0
+    else
+        if [ "$verbose" = "true" ]; then
+            echo "No config file found at $config_file"
+        fi
+        return 1
+    fi
+}
+
+# Save config
+save_config() {
+    local config_file="$HOME/.stripmeta-config"
+
+    echo "# StripMeta configuration file" > "$config_file"
+    echo "# Generated on $(date)" >> "$config_file"
+    echo "clean_filenames=$clean_filenames" >> "$config_file"
+    echo "rename=$rename" >> "$config_file"
+    echo "backups=$backups" >> "$config_file"
+    echo "verbose=$verbose" >> "$config_file"
+    echo "recursive=$recursive" >> "$config_file"
+    echo "convert_to_mp4=$convert_to_mp4" >> "$config_file"
+    echo "conv_oldfileformats=$conv_oldfileformats" >> "$config_file"
+    echo "rm_metadata_files=$rm_metadata_files" >> "$config_file"
+    echo "backup_dir=\"$backup_dir\"" >> "$config_file"
+    echo "newfileext=\"$newfileext\"" >> "$config_file"
+    echo "audio_output_format=\"$audio_output_format\"" >> "$config_file"
+
+    echo "Configuration saved to $config_file"
+}
+
+remember_last_choices() {
+    local config_file="$HOME/.stripmeta-lastrun"
+    echo "# Last run choices" > "$config_file"
+    echo "last_clean_filenames=$clean_filenames" >> "$config_file"
+    echo "last_rename=$rename" >> "$config_file"
+    echo "last_backups=$backups" >> "$config_file"
+    echo "last_recursive=$recursive" >> "$config_file"
+    echo "last_convert_to_mp4=$convert_to_mp4" >> "$config_file"
+    echo "last_conv_oldfileformats=$conv_oldfileformats" >> "$config_file"
+    echo "last_rm_metadata_files=$rm_metadata_files" >> "$config_file"
+    echo "last_audio_output_format=\"$audio_output_format\"" >> "$config_file"
+}
+
+load_last_choices() {
+    local config_file="$HOME/.stripmeta-lastrun"
+    if [ -f "$config_file" ]; then
+        . "$config_file"
+        # Apply last choices as defaults if not already set
+        [ -z "$clean_filenames" ] && clean_filenames=${last_clean_filenames:-false}
+        [ -z "$rename" ] && rename=${last_rename:-false}
+        [ -z "$backups" ] && backups=${last_backups:-false}
+        [ -z "$recursive" ] && recursive=${last_recursive:-false}
+        [ -z "$convert_to_mp4" ] && convert_to_mp4=${last_convert_to_mp4:-false}
+        [ -z "$conv_oldfileformats" ] && conv_oldfileformats=${last_conv_oldfileformats:-false}
+        [ -z "$rm_metadata_files" ] && rm_metadata_files=${last_rm_metadata_files:-false}
+        [ -z "$audio_output_format" ] && audio_output_format=${last_audio_output_format:-"mp3"}
+    fi
+}
+
+verify_file_integrity() {
+    local file="$1"
+    local original_size=$2
+
+    # Check if file exists
+    if [ ! -f "$file" ]; then
+        echo "Error: Output file not found: $file"
+        return 1
+    fi
+
+    # Check if file size is reasonable (not zero and not significantly smaller)
+    local new_size=$(stat -c%s "$file" 2>/dev/null || stat -f%z "$file")
+    if [ "$new_size" -eq 0 ]; then
+        echo "Error: Output file is empty: $file"
+        return 1
+    fi
+
+    # For media files, try to validate with ffmpeg
+    if [[ "$file" =~ \.(mp4|mp3|mkv|m4v|flv|mov|avi|wav|ogg|flac)$ ]]; then
+        if ! ffmpeg -v error -i "$file" -f null - >/dev/null 2>&1; then
+            echo "Error: Output file fails integrity check: $file"
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+# Verification function
+verify_metadata_removal() {
+    local file="$1"
+    local file_type="$2"
+
+    if [ "$verbose" = "true" ]; then
+        echo -n "Verifying metadata removal for $file... "
+    fi
+
+    # Create a temp file for output
+    local temp_output=$(mktemp)
+
+    case "$file_type" in
+        mp3|mp4|m4v|m4a|flv|mov)
+            # Use exiftool for thorough check
+            exiftool "$file" > "$temp_output"
+            if grep -i -E '(title|artist|album|year|comment|genre|copyright|manufacturer|model|created)' "$temp_output"; then
+                echo "WARNING: Some metadata may remain in the file."
+                rm "$temp_output"
+                return 1
+            else
+                [ "$verbose" = "true" ] && echo "OK"
+                rm "$temp_output"
+                return 0
+            fi
+            ;;
+        mkv)
+            # More comprehensive MKV check
+            if command -v mkvinfo >/dev/null 2>&1; then
+                mkvinfo "$file" > "$temp_output"
+                if grep -i -E "(title|date|comment|description|copyright)" "$temp_output"; then
+                    echo "WARNING: Metadata may remain in the MKV file."
+                    rm "$temp_output"
+                    return 1
+                else
+                    [ "$verbose" = "true" ] && echo "OK"
+                    rm "$temp_output"
+                    return 0
+                fi
+            else
+                [ "$verbose" = "true" ] && echo "Skipped (mkvinfo not available)"
+                rm "$temp_output"
+                return 2
+            fi
+            ;;
+    esac
+
+    rm "$temp_output"
+    return 0
+}
+
+# Add function to detect file type by content
+detect_file_content_type() {
+    local file="$1"
+    local file_output
+
+    # Check if file command exists
+    if command -v file >/dev/null 2>&1; then
+        file_output=$(file -b --mime-type "$file")
+        echo "$file_output"
+    else
+        # Fall back to extension if file command is not available
+        detect_file_type "$file"
+    fi
 }
 
 # Remove all .nfo and thumb.jpg files in directory
@@ -277,9 +636,11 @@ is_file_processed() {
     grep -q "$file_hash" "$processing_log"
 }
 
-# Log processed file
+# Improve the log_processed_file function
 log_processed_file() {
     local file="$1"
+    local operation="${2:-processed}"
+    local size=$(du -h "$file" | cut -f1)
 
     # Validate file parameter
     if [ -z "$file" ]; then
@@ -296,10 +657,14 @@ log_processed_file() {
     # Ensure log file exists
     [ -f "$processing_log" ] || touch "$processing_log"
 
-    # Get file hash and log it with absolute path
+    # Get file hash and log it with detailed info
     local file_hash=$(sha256sum "$file" | awk '{print $1}')
     local abs_path=$(readlink -f "$file")
-    echo "$file_hash $abs_path" >> "$processing_log"
+    local timestamp=$(date +"%Y-%m-%d %H:%M:%S")
+    echo "$timestamp | $file_hash | $operation | $size | $abs_path" >> "$processing_log"
+
+    # Rotate log if needed
+    rotate_logs
 }
 
 # Process MP3 audio files
@@ -721,9 +1086,17 @@ main() {
     # Parse command-line options
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --convert-avi-mpg-flv-mov|--conv-oldfileformats)
-                conv_oldfileformats=true
+            --check-update)
+                check_for_updates
+                exit 0
+                ;;
+            --parallel)
+                parallel_processing=true
                 shift
+                ;;
+            --max-jobs)
+                max_parallel_jobs="$2"
+                shift 2
                 ;;
             --audio-format)
                 if [[ -n "$2" && "$2" =~ ^(mp3|flac|ogg|wav|aac|m4a)$ ]]; then
@@ -766,7 +1139,12 @@ main() {
                 recursive=true
                 shift
                 ;;
-            --convert-to-mp4)
+           # --convert-to-mp4)
+           #     convert_to_mp4=true
+           #     shift
+           #     ;;
+            --convert-avi-mpg-flv-mov|--conv-oldfileformats)
+                conv_oldfileformats=true
                 convert_to_mp4=true
                 shift
                 ;;
@@ -786,96 +1164,103 @@ main() {
         esac
     done
 
-    # If no arguments, prompt user
     if [ $# -eq 0 ]; then
-        # Ask about filename cleaning if not specified via CLI
-        if [ "$clean_filenames" = false ]; then
-            read -p "Replace dots with spaces in filenames? [y/N]: " clean_response
-            if [[ "$clean_response" =~ ^[Yy]$ ]]; then
-                clean_filenames=true
-            fi
+    # Load last choices first to use as defaults
+    load_last_choices
+
+    echo "==== StripMeta File Processor ===="
+    echo "Script version: $SCRIPT_VERSION"
+
+    # Ask about processing options in groups
+    echo -e "\n== File Handling Options =="
+    if [ "$clean_filenames" = false ]; then
+        read -p "Replace dots with spaces in filenames? [y/N]: " clean_response
+        if [[ "$clean_response" =~ ^[Yy]$ ]]; then
+            clean_filenames=true
         fi
+    fi
 
-        # Rename file .ext for processed files
-        if [ "$rename" = false ]; then
-            read -p "Rename video file extensions to $newfileext? [y/N]: " rename_response
-            if [[ "$rename_response" =~ ^[Yy]$ ]]; then
-                rename=true
-            fi
+    if [ "$rename" = false ]; then
+        read -p "Rename video file extensions to $newfileext? [y/N]: " rename_response
+        if [[ "$rename_response" =~ ^[Yy]$ ]]; then
+            rename=true
         fi
+    fi
 
-        # Ask about audio output format
-        echo "Choose audio output format:"
-        echo "1) MP3 (default)"
-        echo "2) FLAC (lossless)"
-        echo "3) OGG"
-        echo "4) WAV (uncompressed)"
-        echo "5) AAC"
-        echo "6) M4A"
-        read -p "Select format [1-6] (default: 1): " format_choice
-        case "$format_choice" in
-            2) audio_output_format="flac" ;;
-            3) audio_output_format="ogg" ;;
-            4) audio_output_format="wav" ;;
-            5) audio_output_format="aac" ;;
-            6) audio_output_format="m4a" ;;
-            *) audio_output_format="mp3" ;; # Default or invalid input
-        esac
-        echo "Selected audio output format: $audio_output_format"
+    echo -e "\n== Audio Processing Options =="
+    echo "Choose audio output format:"
+    echo "1) MP3 (default)"
+    echo "2) FLAC (lossless)"
+    echo "3) OGG"
+    echo "4) WAV (uncompressed)"
+    echo "5) AAC"
+    echo "6) M4A"
+    read -p "Select format [1-6] (default: 1): " format_choice
+    case "$format_choice" in
+        2) audio_output_format="flac" ;;
+        3) audio_output_format="ogg" ;;
+        4) audio_output_format="wav" ;;
+        5) audio_output_format="aac" ;;
+        6) audio_output_format="m4a" ;;
+        *) audio_output_format="mp3" ;; # Default or invalid input
+    esac
+    echo "Selected audio output format: $audio_output_format"
 
-        # Ask about file conversion
-        if [ "$convert_to_mp4" = false ]; then
-            read -p "Convert video files to MP4? [y/N]: " convert_response
-            if [[ "$convert_response" =~ ^[Yy]$ ]]; then
-                convert_to_mp4=true
-            fi
+    #echo -e "\n== Video Processing Options =="
+    #if [ "$convert_to_mp4" = false ]; then
+    #    read -p "Convert video files to MP4? [y/N]: " #convert_response
+    #    if [[ "$convert_response" =~ ^[Yy]$ ]]; then
+    #        convert_to_mp4=true
+    #    fi
+    #fi
+
+    if [ "$convert_to_mp4" = true ]; then
+        read -p "Convert AVI, MPG, FLV, MOV, MPEG (Old Movie Formats) to MP4? [y/N]: " convert_specific_response
+        if [[ "$convert_specific_response" =~ ^[Yy]$ ]]; then
+            conv_oldfileformats=true
+            convert_to_mp4=true
         fi
+    fi
 
-        # Ask about converting specific file types
-        if [ "$convert_to_mp4" = true ]; then
-            read -p "Convert AVI, MPG, FLV, MOV, MPEG (Old Movie Formats) to MP4? [y/N]: " convert_specific_response
-            if [[ "$convert_specific_response" =~ ^[Yy]$ ]]; then
-                conv_oldfileformats=true
-                convert_to_mp4=false
-            fi
+    echo -e "\n== General Options =="
+    if [ "$backups" = false ]; then
+        read -p "Backup files to $backup_dir folder? [y/N]: " backups_response
+        if [[ "$backups_response" =~ ^[Yy]$ ]]; then
+            backups=true
         fi
+    fi
 
-        # Ask about file backup processing
-        if [ "$backups" = false ]; then
-            read -p "Backup files to ./backups folder? [y/N]: " backups_response
-            if [[ "$backups_response" =~ ^[Yy]$ ]]; then
-                backups=true
-            fi
-        fi
-
-        # Ask about removing metadata files
         if [ "$rm_metadata_files" = false ]; then
             read -p "Remove .nfo and thumb.jpg files? [y/N]: " metadata_files_response
             if [[ "$metadata_files_response" =~ ^[Yy]$ ]]; then
-                rm_metadata_files=true
+            rm_metadata_files=true
             fi
         fi
 
-        # Ask about recursive processing
         if [ "$recursive" = false ]; then
-            read -p "Process files recursively? [y/N]: " recursive_response
+        read -p "Process files recursively? [y/N]: " recursive_response
             if [[ "$recursive_response" =~ ^[Yy]$ ]]; then
-                recursive=true
+            recursive=true
             fi
         fi
 
+        # Ask to save configuration
+        prompt_for_save_config
+
+        echo -e "\n== Ready to Process =="
         read -p "Process all video and audio files, Continue? (y/N): " confirm
         if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-            echo "Operation cancelled. Press Enter to exit..."
+            echo "Operation cancelled - Press Enter to exit..."
             read
             exit 0
         fi
 
-        # Clean up current directory first
+        # Process files
         cleanup_directory_metadata "."
-
-        # Process files in current directory
         process_files
+        # Show stats at the end
+        show_stats
+
     else
         # Process specified files or directories
           for path in "$@"; do
@@ -894,19 +1279,19 @@ main() {
                         # First clean up the directory of the file
                         cleanup_directory_metadata "$(dirname "$path")"
                         # Process WAV audio file - convert to MP3
-                        process_wav "$path" "$backup_dir"
+                        convert_audio "$path" "$backup_dir" "wav"
                         ;;
                     ogg)
                         # First clean up the directory of the file
                         cleanup_directory_metadata "$(dirname "$path")"
                         # Process OGG audio file - convert to MP3
-                        process_ogg "$path" "$backup_dir"
+                        convert_audio "$path" "$backup_dir" "ogg"
                         ;;
                     iff)
                         # First clean up the directory of the file
                         cleanup_directory_metadata "$(dirname "$path")"
                         # Process IFF audio file - convert to MP3
-                        process_iff "$path" "$backup_dir"
+                        convert_audio "$path" "$backup_dir" "iff"
                         ;;
                     mpeg|mpg|mp4|avi|m4v|flv|mov)
                         # First clean up the directory of the file
