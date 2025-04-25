@@ -3,7 +3,7 @@
 #Dependencies: "exiftool" "mkvpropedit" "sha256sum" "ffmpeg"
 
 # Script version - date
-SCRIPT_VERSION="1.8.0 - 16-04-25"
+SCRIPT_VERSION="1.9.0 - 25-04-25"
 
 # Global variables
 clean_filenames=false
@@ -16,6 +16,9 @@ recursive=false
 convert_to_mp4=false
 conv_oldfileformats=false
 rm_metadata_files=false
+replace_underscores=false
+capitalize_filenames=false
+use_handbrake_settings=false
 files_processed=0
 files_failed=0
 bytes_processed=0
@@ -180,40 +183,123 @@ fi
 # Clean filename by replacing dots with spaces, ensuring proper .ext format
 clean_filename() {
     local file="$1"
+    local dir=$(dirname "$file")
+    local filename=$(basename "$file")
+    local extension="${filename##*.}"
+    local name="${filename%.*}"
+    local new_filename="$name"
+    local changed=false
+
+    # Clean filename if option enabled
     if [ "$clean_filenames" = true ]; then
-        local dir=$(dirname "$file")
-        local filename=$(basename "$file")
-        local extension="${filename##*.}"
-        local name="${filename%.*}"
+        # Replace dots with spaces in the filename
+        new_filename=$(echo "$new_filename" | sed 's/\./ /g')
+        changed=true
+    fi
 
-        # Replace dots with spaces in the filename, then add a dot before the ext
-        local new_filename=$(echo "$name" | sed 's/\./ /g')."$extension"
+    # Replace underscores with spaces if option enabled
+    if [ "$replace_underscores" = true ]; then
+        new_filename=$(echo "$new_filename" | sed 's/_/ /g')
+        changed=true
+    fi
 
-        # Handle special characters
-        new_filename=$(echo "$new_filename" | sed 's/[^[:alnum:][:space:]._-]/_/g')
+    # Capitalize filename if option enabled
+    if [ "$capitalize_filenames" = true ]; then
+        # Capitalize first letter of each word
+        new_filename=$(echo "$new_filename" | awk '{for(i=1;i<=NF;i++){ $i=toupper(substr($i,1,1)) tolower(substr($i,2)) }}1')
+        changed=true
+    fi
 
-        local new_path="$dir/$new_filename"
+    # Handle special characters
+    new_filename=$(echo "$new_filename" | sed 's/[^[:alnum:][:space:]._-]/_/g')
 
-        # Only rename if the filename actually changes
-        if [ "$filename" != "$new_filename" ]; then
-            if [ "$dry_run" = "true" ]; then
-                echo "[DRY RUN] Would rename: $file -> $new_path"
-                echo "$file"
+    # Add extension back
+    new_filename="$new_filename.$extension"
+    local new_path="$dir/$new_filename"
+
+    # Only rename if the filename actually changes
+    if [ "$changed" = true ] && [ "$filename" != "$new_filename" ]; then
+        if [ "$dry_run" = "true" ]; then
+            echo "[DRY RUN] Would rename: $file -> $new_path"
+            echo "$file"
+            return 0
+        else
+            if mv "$file" "$new_path"; then
+                echo "Renamed: $file -> $new_path"
+                echo "$new_path"
                 return 0
             else
-                if mv "$file" "$new_path"; then
-                    echo "Renamed: $file -> $new_path"
-                    echo "$new_path"
-                    return 0
-                else
-                    echo "Failed to rename: $file"
-                    echo "$file"
-                    return 1
-                fi
+                echo "Failed to rename: $file"
+                echo "$file"
+                return 1
             fi
         fi
     fi
     echo "$file"
+}
+
+convert_with_handbrake_settings() {
+    local file="$1"
+    local backup_dir="${2:-./backups}"
+
+    # If HandBrake conversion is disabled, return
+    if [ "$use_handbrake_settings" = false ]; then
+        return 1
+    fi
+
+    echo "Converting using HandBrake settings: $file"
+    if [ "$dry_run" = "true" ]; then
+        echo "[DRY RUN] Would convert with HandBrake settings: $file"
+        return 0
+    fi
+
+    # Backup the original file if backups are enabled
+    if [ "$backups" = "true" ]; then
+        backup_file "$file" "$backup_dir"
+    fi
+
+    # Create output filename
+    local dir=$(dirname "$file")
+    local filename=$(basename "$file")
+    local extension="${filename##*.}"
+    local name="${filename%.*}"
+    local output_file="${dir}/${name}_converted.mkv"
+
+    # Parse the file to determine crop values
+    local crop_params=""
+    if command -v ffmpeg >/dev/null 2>&1; then
+        # Auto-detect crop using ffmpeg cropdetect filter
+        crop_params=$(ffmpeg -ss 60 -i "$file" -t 1 -vf cropdetect -f null - 2>&1 | awk '/crop/ { print $NF }' | tail -1)
+        if [ -z "$crop_params" ]; then
+            # Default crop from HandBrake settings
+            crop_params="crop=66:68:0:0"
+        fi
+    else
+        # Default crop from HandBrake settings
+        crop_params="crop=66:68:0:0"
+    fi
+
+    # Use ffmpeg with settings similar to HandBrake preset
+    if ffmpeg -i "$file" \
+        -c:v libx265 -preset medium -crf 32 \
+        -vf "$crop_params,scale=1280:720:flags=lanczos,unsharp=5:5:1.0:5:5:0.0,hqdn3d=1.0:1.0:2.0:2.0" \
+        -c:a copy \
+        -map_metadata -1 \
+        -movflags +faststart \
+        "$output_file"; then
+
+        # If successful and not backing up, remove original
+        if [ "$backups" = "false" ]; then
+            rm "$file"
+        fi
+
+        echo "✓ Converted with HandBrake settings: $output_file"
+        log_processed_file "$output_file" "handbrake_conversion"
+        return 0
+    else
+        echo "✗ Failed to convert with HandBrake settings: $file"
+        return 1
+    fi
 }
 
 # Show progress
@@ -308,12 +394,15 @@ save_config() {
     echo "# StripMeta configuration file" > "$config_file"
     echo "# Generated on $(date)" >> "$config_file"
     echo "clean_filenames=$clean_filenames" >> "$config_file"
+    echo "replace_underscores=$replace_underscores" >> "$config_file"
+    echo "capitalize_filenames=$capitalize_filenames" >> "$config_file"
     echo "rename=$rename" >> "$config_file"
     echo "backups=$backups" >> "$config_file"
     echo "verbose=$verbose" >> "$config_file"
     echo "recursive=$recursive" >> "$config_file"
     echo "convert_to_mp4=$convert_to_mp4" >> "$config_file"
     echo "conv_oldfileformats=$conv_oldfileformats" >> "$config_file"
+    echo "use_handbrake_settings=$use_handbrake_settings" >> "$config_file"
     echo "rm_metadata_files=$rm_metadata_files" >> "$config_file"
     echo "backup_dir=\"$backup_dir\"" >> "$config_file"
     echo "newfileext=\"$newfileext\"" >> "$config_file"
@@ -326,11 +415,14 @@ remember_last_choices() {
     local config_file="$HOME/.stripmeta-lastrun"
     echo "# Last run choices" > "$config_file"
     echo "last_clean_filenames=$clean_filenames" >> "$config_file"
+    echo "last_replace_underscores=$replace_underscores" >> "$config_file"
+    echo "last_capitalize_filenames=$capitalize_filenames" >> "$config_file"
     echo "last_rename=$rename" >> "$config_file"
     echo "last_backups=$backups" >> "$config_file"
     echo "last_recursive=$recursive" >> "$config_file"
     echo "last_convert_to_mp4=$convert_to_mp4" >> "$config_file"
     echo "last_conv_oldfileformats=$conv_oldfileformats" >> "$config_file"
+    echo "last_use_handbrake_settings=$use_handbrake_settings" >> "$config_file"
     echo "last_rm_metadata_files=$rm_metadata_files" >> "$config_file"
     echo "last_audio_output_format=\"$audio_output_format\"" >> "$config_file"
 }
@@ -341,11 +433,14 @@ load_last_choices() {
         . "$config_file"
         # Apply last choices as defaults if not already set
         [ -z "$clean_filenames" ] && clean_filenames=${last_clean_filenames:-false}
+        [ -z "$replace_underscores" ] && replace_underscores=${last_replace_underscores:-false}
+        [ -z "$capitalize_filenames" ] && capitalize_filenames=${last_capitalize_filenames:-false}
         [ -z "$rename" ] && rename=${last_rename:-false}
         [ -z "$backups" ] && backups=${last_backups:-false}
         [ -z "$recursive" ] && recursive=${last_recursive:-false}
         [ -z "$convert_to_mp4" ] && convert_to_mp4=${last_convert_to_mp4:-false}
         [ -z "$conv_oldfileformats" ] && conv_oldfileformats=${last_conv_oldfileformats:-false}
+        [ -z "$use_handbrake_settings" ] && use_handbrake_settings=${last_use_handbrake_settings:-false}
         [ -z "$rm_metadata_files" ] && rm_metadata_files=${last_rm_metadata_files:-false}
         [ -z "$audio_output_format" ] && audio_output_format=${last_audio_output_format:-"mp3"}
     fi
@@ -904,8 +999,12 @@ process_files() {
                 process_m3u "$file" "$backup_dir"
                 ;;
             m4v|mkv|mp4)
-                # Do not convert these file types
+            # Strip metadata first
                 strip_metadata "$file" "$backup_dir"
+                # If HandBrake settings are enabled, convert using them
+                if [ "$use_handbrake_settings" = "true" ]; then
+                    convert_with_handbrake_settings "$file" "$backup_dir"
+                fi
                 ;;
             mpg|mpeg|avi|flv|mov)
                 # Conditionally convert other file types
@@ -1053,6 +1152,8 @@ process_mkv() {
 # Set drag and drop specific defaults
 set_drag_drop_defaults() {
     clean_filenames=true
+    replace_underscores=true
+    capitalize_filenames=false  # Set to false by default for drag and drop
     rename=true
     backups=true
     rm_metadata_files=true
@@ -1113,6 +1214,18 @@ main() {
                 ;;
             --dry-run)
                 dry_run=true
+                shift
+                ;;
+            --replace-underscores)
+                replace_underscores=true
+                shift
+                ;;
+            --capitalize)
+                capitalize_filenames=true
+                shift
+                ;;
+            --handbrake)
+                use_handbrake_settings=true
                 shift
                 ;;
             --verbose)
@@ -1187,6 +1300,35 @@ main() {
         fi
     fi
 
+    echo -e "\n== Filename Options =="
+    if [ "$clean_filenames" = false ]; then
+        read -p "Replace dots with spaces in filenames? [y/N]: " clean_response
+        if [[ "$clean_response" =~ ^[Yy]$ ]]; then
+            clean_filenames=true
+        fi
+    fi
+
+    if [ "$replace_underscores" = false ]; then
+        read -p "Replace underscores with spaces in filenames? [y/N]: " underscores_response
+        if [[ "$underscores_response" =~ ^[Yy]$ ]]; then
+            replace_underscores=true
+        fi
+    fi
+
+    if [ "$capitalize_filenames" = false ]; then
+        read -p "Capitalize words in filenames? [y/N]: " capitalize_response
+        if [[ "$capitalize_response" =~ ^[Yy]$ ]]; then
+            capitalize_filenames=true
+        fi
+    fi
+
+    if [ "$rename" = false ]; then
+        read -p "Rename video file extensions to $newfileext? [y/N]: " rename_response
+        if [[ "$rename_response" =~ ^[Yy]$ ]]; then
+            rename=true
+        fi
+    fi
+
     echo -e "\n== Audio Processing Options =="
     echo "Choose audio output format:"
     echo "1) MP3 (default)"
@@ -1206,13 +1348,13 @@ main() {
     esac
     echo "Selected audio output format: $audio_output_format"
 
-    #echo -e "\n== Video Processing Options =="
-    #if [ "$convert_to_mp4" = false ]; then
-    #    read -p "Convert video files to MP4? [y/N]: " #convert_response
-    #    if [[ "$convert_response" =~ ^[Yy]$ ]]; then
-    #        convert_to_mp4=true
-    #    fi
-    #fi
+        echo -e "\n== Video Processing Options =="
+    if [ "$use_handbrake_settings" = false ]; then
+        read -p "Convert videos using HandBrake quality settings? [y/N]: " handbrake_response
+        if [[ "$handbrake_response" =~ ^[Yy]$ ]]; then
+            use_handbrake_settings=true
+        fi
+    fi
 
     if [ "$convert_to_mp4" = true ]; then
         read -p "Convert AVI, MPG, FLV, MOV, MPEG (Old Movie Formats) to MP4? [y/N]: " convert_specific_response
@@ -1293,18 +1435,23 @@ main() {
                         # Process IFF audio file - convert to MP3
                         convert_audio "$path" "$backup_dir" "iff"
                         ;;
-                    mpeg|mpg|mp4|avi|m4v|flv|mov)
+                  mpeg|mpg|mp4|avi|m4v|flv|mov)
                         # First clean up the directory of the file
                         cleanup_directory_metadata "$(dirname "$path")"
                         strip_metadata "$path" "$backup_dir"
                         if [ "$conv_oldfileformats" = "true" ]; then
                             convert_to_mp4 "$path" "$backup_dir"
+                        elif [ "$use_handbrake_settings" = "true" ]; then
+                            convert_with_handbrake_settings "$path" "$backup_dir"
                         fi
                         ;;
                     mkv)
                         # First clean up the directory of the file
                         cleanup_directory_metadata "$(dirname "$path")"
                         process_mkv "$path" "$backup_dir"
+                        if [ "$use_handbrake_settings" = "true" ]; then
+                            convert_with_handbrake_settings "$path" "$backup_dir"
+                        fi
                         ;;
                     *)
                         echo "Unsupported file type: $path"
