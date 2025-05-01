@@ -1,146 +1,172 @@
-# Media File Metadata Stripper
-Looking for a better name, CowStripper?
-
-**Version:** 1.8.0 
-**Author:** (X-Seti) Mooheda  
-**Date:** April 17, 2025
+# StripMeta Tool Documentation
 
 ## Overview
+StripMeta is a powerful bash script for removing metadata from various media files (video and audio) and performing additional file processing tasks. It's designed to help you clean up your media library by stripping privacy-revealing metadata, converting file formats, cleaning up filenames, and more.
 
-This script removes metadata from video files, helping to ensure privacy and clean up media files. It supports various audio and video formats, including MP3, AAC, FLAC, WAV, OGG, MP4, MKV, AVI, MPG, MPEG, FLV, MOV, and M4V files.
+**Version**: 1.9.0 (April 25, 2025)  
+**Author**: Moocow Mooheda
 
 ## Dependencies
-
-The script requires the following tools to be installed:
+The script requires the following external tools:
 - `exiftool` - For metadata removal
-- `mkvpropedit` - For processing MKV files
-- `sha256sum` - For file tracking
-- `ffmpeg` - For video conversion
+- `mkvpropedit` - For MKV file processing
+- `sha256sum` - For file checksumming
+- `ffmpeg` - For file conversion and processing
 
-## Changes 
-- Parallel Processing options
+## Core Features
 
-## Features
+### Metadata Removal
+- Strips all metadata from various file formats (MP4, MP3, MKV, etc.)
+- Removes identifying information like geolocation, creation dates, camera info
+- Uses specialized techniques for different file formats
+- Verifies metadata removal
 
-- Removes metadata from video and audio files
-- Cleans filenames (replaces dots with spaces)
-- Renames file extensions (e.g., to .m4v)
-- Creates backups of original files
-- Converts older formats to MP4
-- Removes associated metadata files (.nfo and thumbnail files)
-- Processes files recursively
-- Tracks processed files to avoid redundant processing
+### File Type Support
+- **Video**: MP4, M4V, MKV, AVI, MPG, MPEG, FLV, MOV
+- **Audio**: MP3, WAV, OGG, FLAC, AAC, M4A, IFF, 8SVX, M3V, AUD
+- **Playlists**: M3U
 
-## Usage
+### Filename Cleaning
+- Replace dots with spaces in filenames
+- Replace underscores with spaces
+- Capitalize words in filenames
+- Remove/replace problematic characters
+- Standardize file extensions
 
-### Basic Usage
+### Format Conversion
+- Convert older video formats (AVI, MPG, FLV, MOV) to MP4
+- Convert between audio formats with configurable settings
+- Apply HandBrake-like quality settings for video conversion
 
-Run the script without arguments to use the interactive mode:
+### Additional Cleanup
+- Remove associated metadata files (.nfo files)
+- Remove thumbnail images
+- Log processed files to prevent duplicate processing
 
+## Usage Modes
+
+### Interactive Mode
+Run the script without arguments to enter interactive mode, which will:
+1. Present a menu of options
+2. Allow you to select processing preferences
+3. Save your configuration for future use
+4. Process files in the current directory
+
+### Command Line Mode
+Pass specific options and file/directory paths as arguments:
 ```bash
-./stripmeta-wip.sh
+./stripmeta-wip.sh [OPTIONS] [FILE/DIRECTORY]
 ```
 
-The script will prompt you with options for:
-- Cleaning filenames
-- Renaming file extensions
-- Converting audio to mp3, aac 
-- Converting specific old format files
-- Creating backups
-- Removing metadata files
-- Processing recursively
-
-### Command Line Options
-
-```bash
-./stripmeta-wip.sh [options] [file/directory paths...]
-```
-
-#### Available Options:
-
-- `--version`: Display the script version
-- `--dry-run`: Show what would be done without making changes
-- `--verbose`: Show detailed information
-- `--backups`: Create backups of original files
-- `--backup-dir <path>`: Specify custom backup directory (default: ./backups)
-- `--clean-filenames`: Replace dots with spaces in filenames
-- `--rename`: Rename processed files to .m4v extension
-- `--recursive`: Process files in subdirectories
-- `--convert-audio`: Convert all supported audio files to mp3, aac
-- `--conv-oldfileformats`: Convert only older formats (AVI, MPG, FLV, MOV, MPEG) to MP4
-- `--remove-metadata-files`: Remove associated .nfo and thumbnail files
-- `--reset-log`: Reset the processing log file
-
-### Drag and Drop
-
-You can also drag and drop files or folders onto the script. In drag-and-drop mode, the following options are automatically enabled:
-- Clean filenames
-- Rename to .m4v
+### Drag and Drop Mode
+Simply drag files or folders onto the script in your file manager to process them with a predetermined set of options:
+- Clean filenames (dots to spaces)
+- Replace underscores with spaces
+- Rename video files to the configured extension
 - Create backups
 - Remove metadata files
 
-## Functions Explained
+## Command Line Options
 
-### Main Functions
+### File Handling
+- `--clean-filenames` - Replace dots with spaces in filenames
+- `--replace-underscores` - Replace underscores with spaces
+- `--capitalize` - Capitalize words in filenames
+- `--rename` - Rename video file extensions to configured format (default: m4v)
 
-1. **`main()`**: Coordinates the entire script operation, processes command-line arguments, and handles user interaction.
+### Processing Options
+- `--recursive` - Process files in all subdirectories
+- `--convert-avi-mpg-flv-mov` / `--conv-oldfileformats` - Convert older formats to MP4
+- `--handbrake` - Use HandBrake-like quality settings for conversion
+- `--remove-metadata-files` - Remove .nfo and thumbnail files
+- `--audio-format [format]` - Set output format for audio files (mp3, flac, ogg, wav, aac, m4a)
 
-2. **`process_files()`**: Finds and processes video files in a directory.
+### Performance
+- `--parallel` - Enable parallel processing
+- `--max-jobs N` - Set maximum number of parallel jobs
 
-3. **`strip_metadata()`**: Removes metadata from video files based on their type.
+### Backup Options
+- `--backups` - Create backups of original files
+- `--backup-dir [directory]` - Set custom backup directory (default: ./backups)
 
-4. **`process_mkv()`**: Specifically handles MKV files using mkvpropedit.
+### Other Options
+- `--dry-run` - Show what would be done without making changes
+- `--verbose` - Show detailed processing information
+- `--check-update` - Check for script updates
+- `--version` - Display script version
+- `--reset-log` - Reset the processing log
 
-5. **`convert_audio()`**: Converts audio files to MP3 format using ffmpeg.
+## Configuration
+The script supports saving your configuration for future use:
+- Saved to `~/.stripmeta-config`
+- Last run settings saved to `~/.stripmeta-lastrun`
+- Settings can be reloaded automatically
 
-### Helper Functions
+## Advanced Features
 
-1. **`check_dependencies()`**: Ensures all required tools are installed.
+### Parallel Processing
+- Process multiple files simultaneously for better performance
+- Configure maximum number of parallel jobs
+- Improved I/O performance settings
 
-2. **`clean_filename()`**: Replaces dots with spaces in filenames.
+### Log Management
+- Tracks processed files to prevent duplicate processing
+- Automatic log rotation when logs get too large
+- Detailed error logging
 
-3. **`backup_file()`**: Creates backups of files before processing.
+### Error Handling
+- Detects and reports processing errors
+- Recovery mechanisms for failed operations
+- File integrity verification
 
-4. **`detect_file_type()`**: Determines file type based on extension.
-
-5. **`re_assoc_metadata_files()`**: Removes associated .nfo and thumbnail files.
-
-6. **`is_file_processed()`**: Checks if a file has been processed previously.
-
-7. **`log_processed_file()`**: Records processed files to avoid redundant processing.
-
-8. **`set_drag_drop_defaults()`**: Configures settings for drag and drop mode.
-
-## File Tracking
-
-The script maintains a log file (`.processed_files.log`) that records the SHA256 hash and absolute path of processed files. This prevents re-processing the same files multiple times.
-
-## Supported File Types
-
-- **MP4, M4V, MKV**: Processed directly with respective tools
-- **AVI**: Processed using ffmpeg
-- **MPG, MPEG, FLV, MOV**: Processed with exiftool and can be converted to MP4
-- **OGG, AAC, WAV, IFF, MP3**: Processed using ffmpeg
-
-## Notes
-
-- The script creates a backup directory (`./backups` by default) when the backup option is enabled
-- The script will automatically launch in a terminal window if run from a file manager
-- Processing large files or directories may take time, especially when converting formats
+### Terminal Auto-Detection
+- Automatically opens in a terminal window if executed from a file manager
+- Compatible with multiple desktop environments (GNOME, KDE, XFCE)
 
 ## Examples
 
-Process a single file:
+### Basic Usage
 ```bash
-./stripmeta-wip.sh myvideo.mkv
+# Run in interactive mode
+./stripmeta-wip.sh
+
+# Process a single file
+./stripmeta-wip.sh video.mp4
+
+# Process an entire directory
+./stripmeta-wip.sh --recursive /path/to/media/folder
 ```
 
-Process all videos in a directory recursively:
+### Common Use Cases
 ```bash
-./stripmeta-wip.sh --recursive /path/to/videos
+# Clean filenames and convert all older formats to MP4
+./stripmeta-wip.sh --clean-filenames --conv-oldfileformats /path/to/folder
+
+# Strip metadata with no conversion, create backups
+./stripmeta-wip.sh --backups --backup-dir /path/to/backups /path/to/media
+
+# Clean all filenames and convert audio to FLAC
+./stripmeta-wip.sh --clean-filenames --replace-underscores --capitalize --audio-format flac /path/to/music
 ```
 
-Process and convert older format videos:
-```bash
-./stripmeta-wip.sh --conv-oldfileformats myvideo.avi
-```
+## Best Practices
+1. Run with `--dry-run` first to see what changes would be made
+2. Use `--backups` for important files until you're comfortable with the results
+3. Consider using `--recursive` with caution on large directories
+4. Use the appropriate audio format for your needs (mp3 for compatibility, flac for quality)
+5. Check the logs periodically to ensure proper processing
+
+## Troubleshooting
+- If a file fails to process, try running with `--verbose` to see detailed errors
+- Ensure all dependencies are installed and up-to-date
+- Check file permissions if you encounter access issues
+- For corrupted files, try processing them individually
+
+## Known Limitations
+- Some proprietary formats may retain certain metadata
+- Very large files may require more memory for processing
+- Some older or exotic file formats might not be fully supported
+
+---
+
+For updates and more information, please check the project repository.
