@@ -403,27 +403,54 @@ prompt_for_save_config() {
     fi
 }
 
-check_config() {
-    echo "Debug"
-    #if [["$home/stripmeta-config" =~ ]]; exists then
-    #ifexists="true"
-    #else
-    #echo "file not found"
-    #ifexists="false"
-    #
-    #fi
+check_conf() {
+    #local conf_file="$1"
+    local config_file="$HOME/.stripmeta-config"
+    if [[ -z "$HOME/.stripmeta-config" ]]; then
+        echo "No config file specified."
+        #Seems to be having issues detecting the file in my home folder
+        return 1
+    elif [[ ! -f "$HOME/.stripmeta-config" ]]; then
+        echo "Config file '$HOME/.stripmeta-config' does not exist."
+        return 1
+    elif [[ ! -r "$HOME/.stripmeta-config" ]]; then
+        echo "Config file '$HOME/.stripmeta-config' is not readable."
+        return 1
+    else
+        ifexists="true"
+        return 0
+    fi
 }
 
 load_conf() (
-    #load config file functions, and skip to last question)
-    #
-    #
-    echo -e "\n== Ready to Process =="
-    read -p "Process all video and audio files, Continue? (y/N): " confirm
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        echo "Operation cancelled - Press Enter to exit.."
-        read
-        exit 0
+    local conf_file="$1"
+    if check_conf "$home/$config_file"; then
+        # shellcheck source=/dev/null
+         local config_file="$HOME/.stripmeta-config"
+        source "$home/$config_file"
+        echo "# Loaded saved choices" > "$config_file"
+        echo "last_clean_filenames=$clean_filenames" >> "$config_file"
+        echo "last_replace_underscores=$replace_underscores" >> "$config_file"
+        echo "last_capitalize_filenames=$capitalize_filenames" >> "$config_file"
+        echo "last_rename=$renameext" >> "$config_file"
+        echo "last_backups=$backups" >> "$config_file"
+        echo "last_recursive=$recursive" >> "$config_file"
+        echo "last_convert_to_mp4=$convert_to_mp4" >> "$config_file"
+        echo "last_conv_oldfileformats=$conv_oldfileformats" >> "$config_file"
+        echo "last_use_handbrake_settings=$use_handbrake_settings" >> "$config_file"
+        echo "last_rm_metadata_files=$rm_metadata_files" >> "$config_file"
+        echo "last_audio_output_format=\"$audio_output_format\"" >> "$config_file"
+        echo " "
+        echo -e "\n== Ready to Process =="
+        read -p "Process all video and audio files, Continue? (y/N): " confirm
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            echo "Operation cancelled - Press Enter to exit.."
+            read
+            exit 0
+        fi
+        else
+        echo "Failed to load configuration."
+        return 1
     fi
 )
 
