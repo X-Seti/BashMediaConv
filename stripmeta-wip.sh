@@ -2,8 +2,10 @@
 #Moocow Mooheda 16/Apr25
 #Dependencies: "exiftool" "mkvpropedit" "sha256sum" "ffmpeg"
 
+#Tdo; add functions to load config file y/n prompt
+
 # Script version - date
-SCRIPT_VERSION="1.9.1 - 18-05-25"
+SCRIPT_VERSION="1.9.2 - 18-05-25"
 
 # Global variables
 clean_filenames=false
@@ -11,6 +13,7 @@ dry_run=false
 backups=false
 verbose=false
 renameext=false
+ifexists=false
 recursive=false
 # Default video output format
 convert_to_mp4=false
@@ -400,38 +403,29 @@ prompt_for_save_config() {
     fi
 }
 
-prompt_for_load_config() {
-    if [ "$verbose" = "true" ]; then
-        read -p "Default configuration found, use it? [y/N]: " load_config_response
-        if [[ "$load_config_response" =~ ^[Yy]$ ]]; then
-        load_config
-    else
-        # Still remember for next run
-        remember_last_choices
-        fi
-    fi
+check_config() {
+    echo "Debug"
+    #if [["$home/stripmeta-config" =~ ]]; exists then
+    #ifexists="true"
+    #else
+    #echo "file not found"
+    #ifexists="false"
+    #
+    #fi
 }
 
-# config file
-load_config() {
-    local config_file="$HOME/.stripmeta-config"
-    # Check if config file exists
-    if [ -f "$config_file" ]; then
-        if [ "$verbose" = "true" ]; then
-            echo "Loading configuration from $config_file"
-            load_check="true" #debug - cant find the config?
-        fi
-        # Source the config file
-        . "$config_file"
-        return 0
-    else
-        if [ "$verbose" = "false" ]; then
-            echo "No config file found at $config_file"
-            load_check="false"
-        fi
-        return 1
+load_conf() (
+    #load config file functions, and skip to last question)
+    #
+    #
+    echo -e "\n== Ready to Process =="
+    read -p "Process all video and audio files, Continue? (y/N): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "Operation cancelled - Press Enter to exit.."
+        read
+        exit 0
     fi
-}
+)
 
 # Save config
 save_config() {
@@ -1257,8 +1251,8 @@ main() {
     # Check dependencies before processing
     check_dependencies
 
-    # Load configuration file
-    load_config
+    # check configuration file
+    check_config
 
     # Parse command-line options
     while [[ $# -gt 0 ]]; do
@@ -1356,18 +1350,18 @@ main() {
     if [ $# -eq 0 ]; then
     # Load last choices first to use as defaults
     load_last_choices
-
     echo "==== StripMeta File Processor ===="
     echo "Script version: $SCRIPT_VERSION"
 
+    #if exists ~="$home/stripmeta-config"
+    if [ "$ifexists" = true ]; then
+            read -p "StripMeta config file found, You it? [y/N]: " file_exists
+            if [[ "$file_exists" =~ ^[Yy]$ ]]; then
+                load_conf
+            fi
+    else
     # Ask about processing options in groups
     echo -e "\n== Filename Handling Options =="
-    #echo -e "\n== Filename Options =="
-    prompt_for_load_config
-        if [[ "$load_config_response" =~ ^[Yy]$ ]]; then
-        load_config
-        #load_config_response
-    else
         if [ "$renameext" = false ]; then
             read -p "Rename video file extensions to $newfileext? [y/N]: " rename_response
             if [[ "$rename_response" =~ ^[Yy]$ ]]; then
@@ -1425,10 +1419,10 @@ main() {
 
         if [ "$convert_to_mp4" = true ]; then
         read -p "Convert AVI, MPG, FLV, MOV, MPEG (Old Movie Formats) to MP4? [y/N]: " convert_specific_response
-        if [[ "$convert_specific_response" =~ ^[Yy]$ ]]; then
+            if [[ "$convert_specific_response" =~ ^[Yy]$ ]]; then
                 conv_oldfileformats=true
                 convert_to_mp4=true
-        fi
+            fi
         fi
         echo -e "\n== General Options =="
         if [ "$backups" = false ]; then
@@ -1454,15 +1448,14 @@ main() {
 
         # Ask to save configuration
         prompt_for_save_config
+        echo -e "\n== Ready to Process =="
+        read -p "Process all video and audio files, Continue? (y/N): " confirm
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            echo "Operation cancelled - Press Enter to exit.."
+            read
+            exit 0
+        fi
     fi
-    echo -e "\n== Ready to Process =="
-    read -p "Process all video and audio files, Continue? (y/N): " confirm
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        echo "Operation cancelled - Press Enter to exit.."
-        read
-        exit 0
-    fi
-
     # Process files
     cleanup_directory_metadata "."
     process_files
