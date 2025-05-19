@@ -3,14 +3,14 @@
 #Dependencies: "exiftool" "mkvpropedit" "sha256sum" "ffmpeg"
 
 # Script version - date
-SCRIPT_VERSION="1.9.0 - 25-04-25"
+SCRIPT_VERSION="1.9.1 - 18-05-25"
 
 # Global variables
 clean_filenames=false
 dry_run=false
 backups=false
 verbose=false
-rename=false
+renameext=false
 recursive=false
 # Default video output format
 convert_to_mp4=false
@@ -22,6 +22,14 @@ use_handbrake_settings=false
 files_processed=0
 files_failed=0
 bytes_processed=0
+skipped_files=0
+mp4_files_processed=0
+mkv_files_processed=0
+mp3_files_processed=0
+flac_files_processed=0
+audio_files_processed=0
+video_files_processed=0
+other_files_processed=0
 backup_dir="./backups"
 newfileext="m4v"
 processing_log=".processed_files.log"
@@ -294,10 +302,12 @@ convert_with_handbrake_settings() {
         fi
 
         echo "✓ Converted with HandBrake settings: $output_file"
+        files_processed=$((files_processed + 1))
         log_processed_file "$output_file" "handbrake_conversion"
         return 0
     else
         echo "✗ Failed to convert with HandBrake settings: $file"
+        files_failed=$((files_failed + 1))
         return 1
     fi
 }
@@ -319,13 +329,36 @@ show_progress() {
 }
 
 show_stats() {
-    echo "========== Processing Statistics =========="
-    echo "Files processed successfully: $files_processed"
-    echo "Files failed: $files_failed"
-    echo "Total data processed: $(numfmt --to=iec-i --suffix=B $bytes_processed)"
-    echo "========================================"
-}
+ echo "========== Processing Statistics =========="
+ echo "Files processed successfully: $files_processed"
+ echo "Files failed: $files_failed"
+ echo "Total data processed: $(numfmt --to=iec-i --suffix=B $bytes_processed 2>/dev/null || echo "$bytes_processed bytes")"
+ echo ""
+ echo "Files processed by type:"
+  if [ "$video_files_processed" -gt 0 ]; then
+    echo "  Video files: $video_files_processed"
+  fi
+  if [ "$mp4_files_processed" -gt 0 ]; then
+    echo "    - MP4: $mp4_files_processed"
+  fi
+  if [ "$mkv_files_processed" -gt 0 ]; then
+    echo "    - MKV: $mkv_files_processed"
+  fi
+  if [ "$audio_files_processed" -gt 0 ]; then
+    echo "  Audio files: $audio_files_processed"
+  fi
+  if [ "$mp3_files_processed" -gt 0 ]; then
+    echo "    - MP3: $mp3_files_processed"
+  fi
+  if [ "$flac_files_processed" -gt 0 ]; then
+    echo "    - FLAC: $flac_files_processed"
+  fi
+  if [ "$other_files_processed" -gt 0 ]; then
+    echo "  Other files: $other_files_processed"
+  fi
+  echo "==========================================="
 
+}
 update_progress() {
     local current=$1
     local total=$2
@@ -367,21 +400,34 @@ prompt_for_save_config() {
     fi
 }
 
+prompt_for_load_config() {
+    if [ "$verbose" = "true" ]; then
+        read -p "Default configuration found, use it? [y/N]: " load_config_response
+        if [[ "$load_config_response" =~ ^[Yy]$ ]]; then
+        load_config
+    else
+        # Still remember for next run
+        remember_last_choices
+        fi
+    fi
+}
+
 # config file
 load_config() {
     local config_file="$HOME/.stripmeta-config"
-
     # Check if config file exists
     if [ -f "$config_file" ]; then
         if [ "$verbose" = "true" ]; then
             echo "Loading configuration from $config_file"
+            load_check="true" #debug - cant find the config?
         fi
         # Source the config file
         . "$config_file"
         return 0
     else
-        if [ "$verbose" = "true" ]; then
+        if [ "$verbose" = "false" ]; then
             echo "No config file found at $config_file"
+            load_check="false"
         fi
         return 1
     fi
@@ -396,7 +442,7 @@ save_config() {
     echo "clean_filenames=$clean_filenames" >> "$config_file"
     echo "replace_underscores=$replace_underscores" >> "$config_file"
     echo "capitalize_filenames=$capitalize_filenames" >> "$config_file"
-    echo "rename=$rename" >> "$config_file"
+    echo "rename=$renameext" >> "$config_file"
     echo "backups=$backups" >> "$config_file"
     echo "verbose=$verbose" >> "$config_file"
     echo "recursive=$recursive" >> "$config_file"
@@ -417,7 +463,7 @@ remember_last_choices() {
     echo "last_clean_filenames=$clean_filenames" >> "$config_file"
     echo "last_replace_underscores=$replace_underscores" >> "$config_file"
     echo "last_capitalize_filenames=$capitalize_filenames" >> "$config_file"
-    echo "last_rename=$rename" >> "$config_file"
+    echo "last_rename=$renameext" >> "$config_file"
     echo "last_backups=$backups" >> "$config_file"
     echo "last_recursive=$recursive" >> "$config_file"
     echo "last_convert_to_mp4=$convert_to_mp4" >> "$config_file"
@@ -428,6 +474,7 @@ remember_last_choices() {
 }
 
 load_last_choices() {
+
     local config_file="$HOME/.stripmeta-lastrun"
     if [ -f "$config_file" ]; then
         . "$config_file"
@@ -435,7 +482,7 @@ load_last_choices() {
         [ -z "$clean_filenames" ] && clean_filenames=${last_clean_filenames:-false}
         [ -z "$replace_underscores" ] && replace_underscores=${last_replace_underscores:-false}
         [ -z "$capitalize_filenames" ] && capitalize_filenames=${last_capitalize_filenames:-false}
-        [ -z "$rename" ] && rename=${last_rename:-false}
+        [ -z "$renameext" ] && renameext=${last_rename:-false}
         [ -z "$backups" ] && backups=${last_backups:-false}
         [ -z "$recursive" ] && recursive=${last_recursive:-false}
         [ -z "$convert_to_mp4" ] && convert_to_mp4=${last_convert_to_mp4:-false}
@@ -673,9 +720,11 @@ convert_to_mp4() {
 
         echo "✓ Converted to MP4: $output_file"
         log_processed_file "$output_file"
+        files_processed=$((files_processed + 1))
         return 0
     else
         echo "✗ Failed to convert to MP4: $file"
+        files_failed=$((files_failed + 1))
         return 1
     fi
 }
@@ -732,10 +781,12 @@ is_file_processed() {
 }
 
 # Improve the log_processed_file function
+# Improve the log_processed_file function
 log_processed_file() {
     local file="$1"
     local operation="${2:-processed}"
     local size=$(du -h "$file" | cut -f1)
+    local file_type="${3:-unknown}"
 
     # Validate file parameter
     if [ -z "$file" ]; then
@@ -756,9 +807,24 @@ log_processed_file() {
     local file_hash=$(sha256sum "$file" | awk '{print $1}')
     local abs_path=$(readlink -f "$file")
     local timestamp=$(date +"%Y-%m-%d %H:%M:%S")
-    echo "$timestamp | $file_hash | $operation | $size | $abs_path" >> "$processing_log"
+    echo "$timestamp | $file_hash | $operation | $size | $file_type | $abs_path" >> "$processing_log"
 
-    # Rotate log if needed
+    # Update counters based on file type
+    files_processed=$((files_processed+1))
+    bytes_processed=$((bytes_processed+$(stat -c%s "$file" 2>/dev/null || stat -f%z "$file")))
+
+    # Update file type counters
+    case "$file_type" in
+        mp4) mp4_files_processed=$((mp4_files_processed+1)); video_files_processed=$((video_files_processed+1)) ;;
+        mkv) mkv_files_processed=$((mkv_files_processed+1)); video_files_processed=$((video_files_processed+1)) ;;
+        mp3) mp3_files_processed=$((mp3_files_processed+1)); audio_files_processed=$((audio_files_processed+1)) ;;
+        flac) flac_files_processed=$((flac_files_processed+1)); audio_files_processed=$((audio_files_processed+1)) ;;
+        audio_*) audio_files_processed=$((audio_files_processed+1)) ;;
+        video_*) video_files_processed=$((video_files_processed+1)) ;;
+        *) other_files_processed=$((other_files_processed+1)) ;;
+    esac
+
+    # Rotate logs if needed
     rotate_logs
 }
 
@@ -790,11 +856,12 @@ process_mp3() {
     # Use exiftool to strip metadata from MP3
     if exiftool -overwrite_original -All= "$file"; then
         echo "✓ Processed MP3 with exiftool: $file"
-        # Log processed file
-        log_processed_file "$file"
+        log_processed_file "$file" "processed" "mp3"
+        files_processed=$((files_processed + 1))
         return 0
     else
         echo "✗ Failed to process MP3 with exiftool: $file"
+        files_failed=$((files_failed + 1))
 
         # Alternative: Try ffmpeg as a fallback
         local temp_file="${file%.*}_stripped.mp3"
@@ -897,10 +964,12 @@ convert_audio() {
         fi
         echo "✓ Converted $input_format to $audio_output_format: $output_file"
         # Log processed file
-        log_processed_file "$output_file"
+        log_processed_file "$output_file" "processed" "$audio_output_format"
+        files_processed=$((files_processed + 1))
         return 0
     else
         echo "✗ Failed to convert $input_format to $audio_output_format: $file"
+        files_failed=$((files_failed + 1))
         return 1
     fi
 }
@@ -939,7 +1008,7 @@ process_m3u() {
     echo "✓ Cleaned M3U playlist: $file"
 
     # Log processed file
-    log_processed_file "$file"
+    log_processed_file "$file" "playlist" "m3u"
     return 0
 }
 
@@ -1058,7 +1127,7 @@ strip_metadata() {
     file_type=$(detect_file_type "$file")
 
     # Rename file to .m4v if rename option is true
-    if [ "$rename" = "true" ]; then
+    if [ "$renameext" = "true" ]; then
         local new_name="${file%.*}.$newfileext"
         mv "$file" "$new_name"
         file="$new_name"
@@ -1070,7 +1139,7 @@ strip_metadata() {
         if exiftool -overwrite_original -All= "$file"; then
             echo "✓ Processed with exiftool: $file"
             # Log processed file
-            log_processed_file "$file"
+            log_processed_file "$file" "processed" "$file_type"
             return 0
         fi
     fi
@@ -1083,10 +1152,12 @@ strip_metadata() {
             mv "$temp_file" "$file"
             echo "✓ Processed AVI with ffmpeg: $file"
             # Log processed file
-            log_processed_file "$file"
+            log_processed_file "$file" "processed" "avi"
+            files_processed=$((files_processed + 1))
             return 0
         else
             echo "✗ Failed to process AVI with ffmpeg: $file"
+            files_failed=$((files_failed + 1))
             return 1
         fi
     fi
@@ -1126,7 +1197,7 @@ process_mkv() {
     fi
 
     # Rename file to .m4v if rename option is true
-    if [ "$rename" = "true" ]; then
+    if [ "$renameext" = "true" ]; then
         local new_name="${file%.*}.$newfileext"
         mv "$file" "$new_name"
         file="$new_name"
@@ -1141,10 +1212,12 @@ process_mkv() {
     # Remove title metadata
     if mkvpropedit "$file" -d title; then
         echo "✓ Processed with mkvpropedit: $file"
+        files_processed=$((files_processed + 1))
         # Log processed file
-        log_processed_file "$file"
+        log_processed_file "$file" "processed" "mkv"
     else
         echo "✗ Failed to process with mkvpropedit: $file"
+        files_failed=$((files_failed + 1))
         return 1
     fi
 }
@@ -1183,6 +1256,9 @@ main() {
 
     # Check dependencies before processing
     check_dependencies
+
+    # Load configuration file
+    load_config
 
     # Parse command-line options
     while [[ $# -gt 0 ]]; do
@@ -1285,92 +1361,82 @@ main() {
     echo "Script version: $SCRIPT_VERSION"
 
     # Ask about processing options in groups
-    echo -e "\n== File Handling Options =="
-    if [ "$clean_filenames" = false ]; then
-        read -p "Replace dots with spaces in filenames? [y/N]: " clean_response
-        if [[ "$clean_response" =~ ^[Yy]$ ]]; then
-            clean_filenames=true
+    echo -e "\n== Filename Handling Options =="
+    #echo -e "\n== Filename Options =="
+    prompt_for_load_config
+        if [[ "$load_config_response" =~ ^[Yy]$ ]]; then
+        load_config
+        #load_config_response
+    else
+        if [ "$renameext" = false ]; then
+            read -p "Rename video file extensions to $newfileext? [y/N]: " rename_response
+            if [[ "$rename_response" =~ ^[Yy]$ ]]; then
+                renameext=true
+            fi
         fi
-    fi
 
-    if [ "$rename" = false ]; then
-        read -p "Rename video file extensions to $newfileext? [y/N]: " rename_response
-        if [[ "$rename_response" =~ ^[Yy]$ ]]; then
-            rename=true
+        if [ "$clean_filenames" = false ]; then
+            read -p "Replace dots with spaces in filenames? [y/N]: " clean_response
+            if [[ "$clean_response" =~ ^[Yy]$ ]]; then
+                clean_filenames=true
+            fi
         fi
-    fi
 
-    echo -e "\n== Filename Options =="
-    if [ "$clean_filenames" = false ]; then
-        read -p "Replace dots with spaces in filenames? [y/N]: " clean_response
-        if [[ "$clean_response" =~ ^[Yy]$ ]]; then
-            clean_filenames=true
+        if [ "$replace_underscores" = false ]; then
+            read -p "Replace underscores with spaces in filenames? [y/N]: " underscores_response
+            if [[ "$underscores_response" =~ ^[Yy]$ ]]; then
+                replace_underscores=true
+            fi
         fi
-    fi
 
-    if [ "$replace_underscores" = false ]; then
-        read -p "Replace underscores with spaces in filenames? [y/N]: " underscores_response
-        if [[ "$underscores_response" =~ ^[Yy]$ ]]; then
-            replace_underscores=true
+        if [ "$capitalize_filenames" = false ]; then
+            read -p "Capitalize words in filenames? [y/N]: " capitalize_response
+            if [[ "$capitalize_response" =~ ^[Yy]$ ]]; then
+                capitalize_filenames=true
+            fi
         fi
-    fi
 
-    if [ "$capitalize_filenames" = false ]; then
-        read -p "Capitalize words in filenames? [y/N]: " capitalize_response
-        if [[ "$capitalize_response" =~ ^[Yy]$ ]]; then
-            capitalize_filenames=true
-        fi
-    fi
-
-    if [ "$rename" = false ]; then
-        read -p "Rename video file extensions to $newfileext? [y/N]: " rename_response
-        if [[ "$rename_response" =~ ^[Yy]$ ]]; then
-            rename=true
-        fi
-    fi
-
-    echo -e "\n== Audio Processing Options =="
-    echo "Choose audio output format:"
-    echo "1) MP3 (default)"
-    echo "2) FLAC (lossless)"
-    echo "3) OGG"
-    echo "4) WAV (uncompressed)"
-    echo "5) AAC"
-    echo "6) M4A"
-    read -p "Select format [1-6] (default: 1): " format_choice
-    case "$format_choice" in
+        echo -e "\n== Audio Processing Options =="
+        echo "Choose audio output format:"
+        echo "1) MP3 (default)"
+        echo "2) FLAC (lossless)"
+        echo "3) OGG"
+        echo "4) WAV (uncompressed)"
+        echo "5) AAC"
+        echo "6) M4A"
+        read -p "Select format [1-6] (default: 1): " format_choice
+        case "$format_choice" in
         2) audio_output_format="flac" ;;
         3) audio_output_format="ogg" ;;
         4) audio_output_format="wav" ;;
         5) audio_output_format="aac" ;;
         6) audio_output_format="m4a" ;;
         *) audio_output_format="mp3" ;; # Default or invalid input
-    esac
-    echo "Selected audio output format: $audio_output_format"
+        esac
+        echo "Selected audio output format: $audio_output_format"
 
         echo -e "\n== Video Processing Options =="
-    if [ "$use_handbrake_settings" = false ]; then
-        read -p "Convert videos using HandBrake quality settings? [y/N]: " handbrake_response
-        if [[ "$handbrake_response" =~ ^[Yy]$ ]]; then
-            use_handbrake_settings=true
+        if [ "$use_handbrake_settings" = false ]; then
+            read -p "Convert videos using HandBrake quality settings? [y/N]: " handbrake_response
+            if [[ "$handbrake_response" =~ ^[Yy]$ ]]; then
+                use_handbrake_settings=true
+            fi
         fi
-    fi
 
-    if [ "$convert_to_mp4" = true ]; then
+        if [ "$convert_to_mp4" = true ]; then
         read -p "Convert AVI, MPG, FLV, MOV, MPEG (Old Movie Formats) to MP4? [y/N]: " convert_specific_response
         if [[ "$convert_specific_response" =~ ^[Yy]$ ]]; then
-            conv_oldfileformats=true
-            convert_to_mp4=true
+                conv_oldfileformats=true
+                convert_to_mp4=true
         fi
-    fi
-
-    echo -e "\n== General Options =="
-    if [ "$backups" = false ]; then
-        read -p "Backup files to $backup_dir folder? [y/N]: " backups_response
-        if [[ "$backups_response" =~ ^[Yy]$ ]]; then
-            backups=true
         fi
-    fi
+        echo -e "\n== General Options =="
+        if [ "$backups" = false ]; then
+            read -p "Backup files to $backup_dir folder? [y/N]: " backups_response
+            if [[ "$backups_response" =~ ^[Yy]$ ]]; then
+                backups=true
+            fi
+        fi
 
         if [ "$rm_metadata_files" = false ]; then
             read -p "Remove .nfo and thumb.jpg files? [y/N]: " metadata_files_response
@@ -1388,20 +1454,20 @@ main() {
 
         # Ask to save configuration
         prompt_for_save_config
+    fi
+    echo -e "\n== Ready to Process =="
+    read -p "Process all video and audio files, Continue? (y/N): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "Operation cancelled - Press Enter to exit.."
+        read
+        exit 0
+    fi
 
-        echo -e "\n== Ready to Process =="
-        read -p "Process all video and audio files, Continue? (y/N): " confirm
-        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-            echo "Operation cancelled - Press Enter to exit..."
-            read
-            exit 0
-        fi
-
-        # Process files
-        cleanup_directory_metadata "."
-        process_files
-        # Show stats at the end
-        show_stats
+    # Process files
+    cleanup_directory_metadata "."
+    process_files
+    # Show stats at the end
+    show_stats
 
     else
         # Process specified files or directories
@@ -1469,10 +1535,7 @@ main() {
             fi
         done
     fi
-
-    echo "===================="
-    echo "Processing complete."
-    echo "Press Enter to exit..."
+    echo "Processing complete. Press Enter to exit..."
     read
 }
 
