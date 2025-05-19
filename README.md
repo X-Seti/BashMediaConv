@@ -3,8 +3,8 @@
 ## Overview
 StripMeta is a powerful bash script for removing metadata from various media files (video and audio) and performing additional file processing tasks. It's designed to help you clean up your media library by stripping privacy-revealing metadata, converting file formats, cleaning up filenames, and more.
 
-**Version**: 1.9.0 (April 25, 2025)  
-**Author**: Moocow Mooheda
+**Version**: 1.9.2 (May 19, 2025)  
+**Author**: (X-Seti) Moocow Mooheda
 
 ## Dependencies
 The script requires the following external tools:
@@ -17,8 +17,8 @@ The script requires the following external tools:
 
 ### Metadata Removal
 - Strips all metadata from various file formats (MP4, MP3, MKV, etc.)
-- Removes identifying information like geolocation, creation dates, camera info
-- Uses specialized techniques for different file formats
+- Removes identifying information like geolocation, creation dates, and camera info
+- Uses specialised techniques for different file formats
 - Verifies metadata removal
 
 ### File Type Support
@@ -29,9 +29,9 @@ The script requires the following external tools:
 ### Filename Cleaning
 - Replace dots with spaces in filenames
 - Replace underscores with spaces
-- Capitalize words in filenames
+- Capitalise words in filenames
 - Remove/replace problematic characters
-- Standardize file extensions
+- Standardise file extensions
 
 ### Format Conversion
 - Convert older video formats (AVI, MPG, FLV, MOV) to MP4
@@ -71,7 +71,7 @@ Simply drag files or folders onto the script in your file manager to process the
 ### File Handling
 - `--clean-filenames` - Replace dots with spaces in filenames
 - `--replace-underscores` - Replace underscores with spaces
-- `--capitalize` - Capitalize words in filenames
+- `--capitalise` - Capitalise words in filenames
 - `--rename` - Rename video file extensions to configured format (default: m4v)
 
 ### Processing Options
@@ -106,7 +106,7 @@ The script supports saving your configuration for future use:
 
 ### Parallel Processing
 - Process multiple files simultaneously for better performance
-- Configure maximum number of parallel jobs
+- Configure the maximum number of parallel jobs
 - Improved I/O performance settings
 
 ### Log Management
