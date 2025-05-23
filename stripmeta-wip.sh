@@ -5,7 +5,7 @@
 #Tdo; add functions to load config file y/n prompt
 
 # Script version - date
-SCRIPT_VERSION="1.9.4 - 23-05-25"
+SCRIPT_VERSION="1.9.5 - 23-05-25"
 
 # Global variables
 clean_filenames=false
@@ -46,12 +46,18 @@ declare -A audio_bitrates=(
   ["ogg"]="192k"
   ["wav"]="1536k"
   ["m4a"]="256k"
+  ["wma"]="192k"
+  ["opus"]="128k"
+  ["amr"]="12.2k"
+  ["aiff"]="1536k"
 )
 declare -A audio_quality=(
   ["mp3"]="0"       # 0-9 (lower is better)
   ["flac"]="8"      # 0-8 (higher is better)
   ["ogg"]="5"       # -1 to 10 (higher is better)
   ["aac"]="4"       # 1-5 (higher is better)
+  ["wma"]="3"       # 0-100 (higher is better)
+  ["opus"]="10"     # 0-10 (higher is better)
 )
 
 parallel_processing=true
@@ -140,35 +146,49 @@ rotate_logs() {
 if [ -t 1 ]; then
     : # no-op
 else
+    # Properly escape arguments with spaces for terminal relaunch
+    escaped_args=""
+    for arg in "$@"; do
+        escaped_args="$escaped_args $(printf '%q' "$arg")"
+    done
+
+    if [ "$verbose" = "true" ]; then
+        echo "DEBUG: Relaunching in terminal with args: $escaped_args"
+        echo "DEBUG: Current directory: $(pwd)"
+    fi
+
     if [ -n "$XDG_CURRENT_DESKTOP" ]; then
         case "$XDG_CURRENT_DESKTOP" in
             GNOME|Unity)
-                gnome-terminal -- bash -c "$0 $*; exec bash" || xterm -e bash -c "$0 $*; exec bash"
+                gnome-terminal -- bash -c "cd $(printf '%q' "$(pwd)") && $(printf '%q' "$0")$escaped_args; exec bash" || \
+                xterm -e bash -c "cd $(printf '%q' "$(pwd)") && $(printf '%q' "$0")$escaped_args; exec bash"
                 ;;
             KDE)
-                konsole -e bash -c "$0 $*; exec bash" || xterm -e bash -c "$0 $*; exec bash"
+                konsole -e bash -c "cd $(printf '%q' "$(pwd)") && $(printf '%q' "$0")$escaped_args; exec bash" || \
+                xterm -e bash -c "cd $(printf '%q' "$(pwd)") && $(printf '%q' "$0")$escaped_args; exec bash"
                 ;;
             XFCE)
-                xfce4-terminal -e "bash -c \"$0 $*; exec bash\"" || xterm -e bash -c "$0 $*; exec bash"
+                xfce4-terminal -e "bash -c \"cd $(printf '%q' "$(pwd)") && $(printf '%q' "$0")$escaped_args; exec bash\"" || \
+                xterm -e bash -c "cd $(printf '%q' "$(pwd)") && $(printf '%q' "$0")$escaped_args; exec bash"
                 ;;
             *)
-                x-terminal-emulator -e "$0 $*" || \
-                gnome-terminal -- bash -c "$0 $*; exec bash" || \
-                konsole -e bash -c "$0 $*; exec bash" || \
-                xterm -e bash -c "$0 $*; exec bash" || \
-                open -a Terminal "$0" || \
+                x-terminal-emulator -e bash -c "cd $(printf '%q' "$(pwd)") && $(printf '%q' "$0")$escaped_args; exec bash" || \
+                gnome-terminal -- bash -c "cd $(printf '%q' "$(pwd)") && $(printf '%q' "$0")$escaped_args; exec bash" || \
+                konsole -e bash -c "cd $(printf '%q' "$(pwd)") && $(printf '%q' "$0")$escaped_args; exec bash" || \
+                xterm -e bash -c "cd $(printf '%q' "$(pwd)") && $(printf '%q' "$0")$escaped_args; exec bash" || \
+                open -a Terminal -n --args bash -c "cd $(printf '%q' "$(pwd)") && $(printf '%q' "$0")$escaped_args; exec bash" || \
                 echo "Unable to open terminal"
                 ;;
         esac
     elif [ "$(uname)" = "Darwin" ]; then
         # macOS
-        open -a Terminal "$0"
+        open -a Terminal -n --args bash -c "cd $(printf '%q' "$(pwd)") && $(printf '%q' "$0")$escaped_args; exec bash"
     else # fallback
-        x-terminal-emulator -e "$0 $*" || \
-        gnome-terminal -- bash -c "$0 $*; exec bash" || \
-        konsole -e bash -c "$0 $*; exec bash" || \
-        xterm -e bash -c "$0 $*; exec bash" || \
-        echo "Unable to open terminal"
+        x-terminal-emulator -e bash -c "cd $(printf '%q' "$(pwd)") && $(printf '%q' "$0")$escaped_args; exec bash" || \
+        gnome-terminal -- bash -c "cd $(printf '%q' "$(pwd)") && $(printf '%q' "$0")$escaped_args; exec bash" || \
+        konsole -e bash -c "cd $(printf '%q' "$(pwd)") && $(printf '%q' "$0")$escaped_args; exec bash" || \
+        xterm -e bash -c "cd $(printf '%q' "$(pwd)") && $(printf '%q' "$0")$escaped_args; exec bash" || \
+        echo "Unable to open terminal. Please run this script from a terminal."
     fi
     exit 0
 fi
@@ -419,6 +439,120 @@ check_for_updates() {
     fi
 }
 
+show_help() {
+    cat << 'EOF'
+StripMeta - Media File Metadata Remover & Processor
+
+USAGE:
+    ./stripmeta-wip.sh [OPTIONS] [FILES/DIRECTORIES...]
+    ./stripmeta-wip.sh [OPTIONS]                    # Interactive mode
+
+DESCRIPTION:
+    Process video and audio files to remove metadata, clean filenames,
+    convert formats, and organize media collections.
+
+SUPPORTED FORMATS:
+    Video: mp4, mkv, avi, mpg, mpeg, m4v, flv, mov, webm, 3gp, wmv, ts
+    Audio: mp3, flac, wav, ogg, aac, m4a, wma, opus, amr, iff, 8svx
+    Other: m3u (playlists)
+
+COMMAND LINE OPTIONS:
+    -h, --help                      Show this help message
+    --version                       Display script version
+    --check-update                  Check for script updates
+    --dry-run                       Show what would be done without making changes
+    --verbose                       Enable detailed debug output
+
+FILENAME PROCESSING:
+    --clean-filenames               Replace dots with spaces in filenames
+    --replace-underscores           Replace underscores with spaces
+    --capitalize                    Capitalize words in filenames
+    --rename                        Change video extensions to m4v
+
+PROCESSING OPTIONS:
+    --backups                       Create backup copies before processing
+    --backup-dir DIR                Specify backup directory (default: ./backups)
+    --recursive                     Process files in subdirectories
+    --remove-metadata-files         Remove .nfo files and thumbnails
+
+CONVERSION OPTIONS:
+    --audio-format FORMAT           Audio output format: mp3, flac, ogg, wav, aac, m4a
+    --conv-oldfileformats           Convert AVI/MPG/FLV/MOV to MP4
+    --handbrake                     Use HandBrake-style video compression
+
+PERFORMANCE:
+    --parallel                      Enable parallel processing (experimental)
+    --max-jobs N                    Max parallel jobs (default: 4)
+
+LOGGING:
+    --reset-log                     Clear the processing log file
+
+EXAMPLES:
+    # Interactive mode with all prompts
+    ./stripmeta-wip.sh
+
+    # Process specific files
+    ./stripmeta-wip.sh "Movie File.mkv" "Song.mp3"
+
+    # Process directory recursively with backups
+    ./stripmeta-wip.sh --recursive --backups /path/to/media
+
+    # Clean filenames and remove metadata files
+    ./stripmeta-wip.sh --clean-filenames --remove-metadata-files
+
+    # Convert audio to FLAC and use HandBrake settings
+    ./stripmeta-wip.sh --audio-format flac --handbrake
+
+    # Dry run to see what would happen
+    ./stripmeta-wip.sh --dry-run --verbose /media/folder
+
+CONFIGURATION:
+    Settings can be saved to ~/.stripmeta-config for automatic loading.
+    Use the interactive mode to configure and save your preferences.
+
+LOGS:
+    Processing log: .processed_files.log
+    Error log: .processed_files_errors.log
+
+For more information visit: https://github.com/X-Seti/stripmeta
+EOF
+}
+
+show_supported_formats() {
+    cat << 'EOF'
+SUPPORTED MEDIA FORMATS:
+
+VIDEO FORMATS:
+    Primary: mp4, mkv, avi, m4v
+    Legacy: mpg, mpeg, flv, mov
+    Modern: webm, 3gp, wmv
+    Broadcast: ts, mts, m2ts
+    DVD: vob
+    Streaming: rm, rmvb, asf
+
+AUDIO FORMATS:
+    Lossy: mp3, aac, m4a, ogg, wma, opus, amr
+    Lossless: flac, wav, aiff, iff, 8svx
+    Legacy: au, ra, dts, ac3
+    Containers: mka, oga
+
+PLAYLIST FORMATS:
+    m3u (basic playlist support)
+
+OUTPUT FORMATS:
+    Video: mp4 (H.264), mkv (H.265 with HandBrake)
+    Audio: mp3, flac, ogg, wav, aac, m4a
+
+METADATA REMOVAL:
+    - EXIF data from media files
+    - Title, artist, album info from audio
+    - Creation dates and device info
+    - GPS coordinates and camera settings
+    - Associated .nfo files and thumbnails
+EOF
+}
+
+
 prompt_for_save_config() {
     read -p "Would you like to save these settings as default configuration? [y/N]: " save_config_response
     if [[ "$save_config_response" =~ ^[Yy]$ ]]; then
@@ -516,7 +650,7 @@ verify_file_integrity() {
     local file="$1"
     local original_size=$2
 
-     if [ ! -f "$file" ]; then
+    if [ ! -f "$file" ]; then
         echo "Error: Output file not found: $file"
         return 1
     fi
@@ -528,7 +662,7 @@ verify_file_integrity() {
     fi
 
     if [[ "$file" =~ \.(mp4|mp3|mkv|m4v|flv|mov|avi|wav|ogg|flac)$ ]]; then
-        if ! ffmpeg -v error -i "$file" -f null - >/dev/null 2>&1; then
+        if ! ffmpeg -y -nostdin -v error -i "$file" -f null - >/dev/null 2>&1; then
             echo "Error: Output file fails integrity check: $file"
             return 1
         fi
@@ -844,10 +978,10 @@ log_processed_file() {
             flac_files_processed=$((flac_files_processed+1))
             audio_files_processed=$((audio_files_processed+1))
             ;;
-        aac|ogg|wav|m4a|iff|8svx|m3v|aud)
+        aac|ogg|wav|m4a|iff|8svx|m3v|aud|wma|opus|amr|aiff|au|ra|dts|ac3|mka|oga)
             audio_files_processed=$((audio_files_processed+1))
             ;;
-        avi|mpg|mpeg|flv|mov|m4v)
+        avi|mpg|mpeg|flv|mov|m4v|webm|3gp|wmv|asf|rm|rmvb|ts|mts|m2ts|vob|ogv)
             video_files_processed=$((video_files_processed+1))
             ;;
         *)
@@ -1044,6 +1178,17 @@ process_files() {
             -iname "*.mkv" -o \
             -iname "*.flv" -o \
             -iname "*.mov" -o \
+            -iname "*.webm" -o \
+            -iname "*.3gp" -o \
+            -iname "*.wmv" -o \
+            -iname "*.asf" -o \
+            -iname "*.rm" -o \
+            -iname "*.rmvb" -o \
+            -iname "*.ts" -o \
+            -iname "*.mts" -o \
+            -iname "*.m2ts" -o \
+            -iname "*.vob" -o \
+            -iname "*.ogv" -o \
             -iname "*.mp3" -o \
             -iname "*.wav" -o \
             -iname "*.ogg" -o \
@@ -1052,6 +1197,16 @@ process_files() {
             -iname "*.flac" -o \
             -iname "*.aac" -o \
             -iname "*.m4a" -o \
+            -iname "*.wma" -o \
+            -iname "*.opus" -o \
+            -iname "*.amr" -o \
+            -iname "*.aiff" -o \
+            -iname "*.au" -o \
+            -iname "*.ra" -o \
+            -iname "*.dts" -o \
+            -iname "*.ac3" -o \
+            -iname "*.mka" -o \
+            -iname "*.oga" -o \
             -iname "*.m3u" -o \
             -iname "*.m3v" -o \
             -iname "*.aud" \
@@ -1072,6 +1227,17 @@ process_files() {
             -iname "*.mkv" -o \
             -iname "*.flv" -o \
             -iname "*.mov" -o \
+            -iname "*.webm" -o \
+            -iname "*.3gp" -o \
+            -iname "*.wmv" -o \
+            -iname "*.asf" -o \
+            -iname "*.rm" -o \
+            -iname "*.rmvb" -o \
+            -iname "*.ts" -o \
+            -iname "*.mts" -o \
+            -iname "*.m2ts" -o \
+            -iname "*.vob" -o \
+            -iname "*.ogv" -o \
             -iname "*.mp3" -o \
             -iname "*.wav" -o \
             -iname "*.ogg" -o \
@@ -1080,6 +1246,16 @@ process_files() {
             -iname "*.flac" -o \
             -iname "*.aac" -o \
             -iname "*.m4a" -o \
+            -iname "*.wma" -o \
+            -iname "*.opus" -o \
+            -iname "*.amr" -o \
+            -iname "*.aiff" -o \
+            -iname "*.au" -o \
+            -iname "*.ra" -o \
+            -iname "*.dts" -o \
+            -iname "*.ac3" -o \
+            -iname "*.mka" -o \
+            -iname "*.oga" -o \
             -iname "*.m3u" -o \
             -iname "*.m3v" -o \
             -iname "*.aud" \
@@ -1105,7 +1281,14 @@ process_single_file() {
     ext=$(echo "$ext" | tr '[:upper:]' '[:lower:]')
 
     if [ "$verbose" = "true" ]; then
-        echo "DEBUG: Processing single file: $file (ext: $ext)"
+        echo "DEBUG: Processing single file: '$file' (ext: $ext)"
+    fi
+
+    # Verify file exists before processing
+    if [ ! -f "$file" ]; then
+        echo "✗ ERROR: File not found during processing: '$file'"
+        files_failed=$((files_failed + 1))
+        return 1
     fi
 
     case "$ext" in
@@ -1116,7 +1299,7 @@ process_single_file() {
                 convert_audio "$file" "$backup_dir" "mp3"
             fi
             ;;
-        wav|ogg|flac|aac|m4a|iff|8svx|m3v|aud)
+        wav|ogg|flac|aac|m4a|iff|8svx|m3v|aud|wma|opus|amr|aiff|au|ra|dts|ac3|mka|oga)
             convert_audio "$file" "$backup_dir" "$ext"
             ;;
         m3u)
@@ -1128,7 +1311,7 @@ process_single_file() {
                 convert_with_handbrake_settings "$file" "$backup_dir"
             fi
             ;;
-        mpg|mpeg|avi|flv|mov)
+        mpg|mpeg|avi|flv|mov|webm|3gp|wmv|asf|rm|rmvb|ts|mts|m2ts|vob|ogv)
             strip_metadata "$file" "$backup_dir"
             if [ "$conv_oldfileformats" = "true" ]; then
                 convert_to_mp4 "$file" "$backup_dir"
@@ -1282,6 +1465,14 @@ main() {
     # Handle command line arguments
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            --formats)
+                show_supported_formats
+                exit 0
+                ;;
             --check-update)
                 check_for_updates
                 exit 0
@@ -1295,16 +1486,17 @@ main() {
                 shift 2
                 ;;
             --audio-format)
-                if [[ -n "$2" && "$2" =~ ^(mp3|flac|ogg|wav|aac|m4a)$ ]]; then
+                if [[ -n "$2" && "$2" =~ ^(mp3|flac|ogg|wav|aac|m4a|wma|opus)$ ]]; then
                     audio_output_format="$2"
                     shift 2
                 else
-                    echo "Error: Invalid audio format. Supported formats: mp3, flac, ogg, wav, aac, m4a"
+                    echo "Error: Invalid audio format. Supported formats: mp3, flac, ogg, wav, aac, m4a, wma, opus"
                     exit 1
                 fi
                 ;;
             --version)
-                echo "Video File Processor version $SCRIPT_VERSION"
+                echo "StripMeta File Processor version $SCRIPT_VERSION"
+                echo "Supported formats: Run --formats for complete list"
                 exit 0
                 ;;
             --dry-run)
@@ -1434,14 +1626,16 @@ main() {
             fi
         fi
 
-        echo -e "\n== Audio Processing Options ==\nChoose audio output format:\n1) MP3 (default)\n2) FLAC (lossless)\n3) OGG\n4) WAV (uncompressed)\n5) AAC\n6) M4A"
-        read -p "Select format [1-6] (default: 1): " format_choice
+        echo -e "\n== Audio Processing Options ==\nChoose audio output format:\n1) MP3 (default - widely compatible)\n2) FLAC (lossless compression)\n3) OGG (open source)\n4) WAV (uncompressed)\n5) AAC (modern lossy)\n6) M4A (iTunes compatible)\n7) WMA (Windows Media)\n8) Opus (modern low-bitrate)"
+        read -p "Select format [1-8] (default: 1): " format_choice
         case "$format_choice" in
         2) audio_output_format="flac" ;;
         3) audio_output_format="ogg" ;;
         4) audio_output_format="wav" ;;
         5) audio_output_format="aac" ;;
         6) audio_output_format="m4a" ;;
+        7) audio_output_format="wma" ;;
+        8) audio_output_format="opus" ;;
         *) audio_output_format="mp3" ;; # Default or invalid input
         esac
         echo "Selected audio output format: $audio_output_format"
