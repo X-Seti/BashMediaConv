@@ -5,7 +5,7 @@
 #Tdo; add functions to load config file y/n prompt
 
 # Script version - date
-SCRIPT_VERSION="1.9.3 - 18-05-25"
+SCRIPT_VERSION="1.9.4 - 23-05-25"
 
 # Global variables
 clean_filenames=false
@@ -23,6 +23,9 @@ capitalize_filenames=false
 use_handbrake_settings=false
 files_processed=0
 files_failed=0
+files_skipped=0
+thumbnails_removed=0
+metadata_files_removed=0
 bytes_processed=0
 skipped_files=0
 mp4_files_processed=0
@@ -172,12 +175,27 @@ fi
 
 clean_filename() {               # Dots with Spaces
     local file="$1"
-    local dir=$(dirname "$file")
-    local filename=$(basename "$file")
-    local extension="${filename##*.}"
-    local name="${filename%.*}"
-    local new_filename="$name"
+    local dir
+    local filename
+    local extension
+    local name
+    local new_filename
+    local new_path
     local changed=false
+
+    if [ "$verbose" = "true" ]; then
+        echo "DEBUG: clean_filename input: '$file'"
+    fi
+
+    dir=$(dirname "$file")
+    filename=$(basename "$file")
+    extension="${filename##*.}"
+    name="${filename%.*}"
+    new_filename="$name"
+
+    if [ "$verbose" = "true" ]; then
+        echo "DEBUG: dir='$dir', filename='$filename', extension='$extension', name='$name'"
+    fi
 
     # Clean filename
     if [ "$clean_filenames" = true ]; then
@@ -203,7 +221,11 @@ clean_filename() {               # Dots with Spaces
 
     # Add extension back
     new_filename="$new_filename.$extension"
-    local new_path="$dir/$new_filename"
+    new_path="$dir/$new_filename"
+
+    if [ "$verbose" = "true" ]; then
+        echo "DEBUG: new_filename='$new_filename', new_path='$new_path'"
+    fi
 
     # Only rename if the filename actually changes
     if [ "$changed" = true ] && [ "$filename" != "$new_filename" ]; then
@@ -214,6 +236,9 @@ clean_filename() {               # Dots with Spaces
         else
             if mv "$file" "$new_path"; then
                 echo "Renamed: $file -> $new_path"
+                if [ "$verbose" = "true" ]; then
+                    echo "DEBUG: clean_filename output: '$new_path'"
+                fi
                 echo "$new_path"
                 return 0
             else
@@ -223,12 +248,22 @@ clean_filename() {               # Dots with Spaces
             fi
         fi
     fi
+
+    if [ "$verbose" = "true" ]; then
+        echo "DEBUG: clean_filename output (unchanged): '$file'"
+    fi
     echo "$file"
 }
 
 convert_with_handbrake_settings() {
     local file="$1"
     local backup_dir="${2:-./backups}"
+    local dir
+    local filename
+    local extension
+    local name
+    local output_file
+    local crop_params
 
     if [ "$use_handbrake_settings" = false ]; then
         return 1
@@ -240,21 +275,31 @@ convert_with_handbrake_settings() {
         return 0
     fi
 
+    # Check if file exists before processing
+    if [ ! -f "$file" ]; then
+        echo "✗ Error: File not found: $file"
+        files_failed=$((files_failed + 1))
+        return 1
+    fi
+
     if [ "$backups" = "true" ]; then
         backup_file "$file" "$backup_dir"
     fi
 
-    local dir=$(dirname "$file")
-    local filename=$(basename "$file")
-    local extension="${filename##*.}"
-    local name="${filename%.*}"
-    local output_file="${dir}/${name}_converted.mkv"
+    dir=$(dirname "$file")
+    filename=$(basename "$file")
+    extension="${filename##*.}"
+    name="${filename%.*}"
+    output_file="${dir}/${name}_converted.mkv"
+
+    echo "DEBUG: Processing file: '$file'"
+    echo "DEBUG: Output will be: '$output_file'"
 
     # Parse the file to determine crop values
-    local crop_params=""
+    crop_params=""
     if command -v ffmpeg >/dev/null 2>&1; then
         # Auto-detect crop using ffmpeg cropdetect filter
-        crop_params=$(ffmpeg -ss 60 -i "$file" -t 1 -vf cropdetect -f null - 2>&1 | awk '/crop/ { print $NF }' | tail -1)
+        crop_params=$(ffmpeg -y -nostdin -ss 60 -i "$file" -t 1 -vf cropdetect -f null - 2>&1 | awk '/crop/ { print $NF }' | tail -1)
         if [ -z "$crop_params" ]; then
             # Default crop from HandBrake settings
             crop_params="crop=66:68:0:0"
@@ -265,7 +310,7 @@ convert_with_handbrake_settings() {
     fi
 
     # Use ffmpeg with settings similar to HandBrake preset
-    if ffmpeg -i "$file" \
+    if ffmpeg -y -nostdin -i "$file" \
         -c:v libx265 -preset medium -crf 32 \
         -vf "$crop_params,scale=1280:720:flags=lanczos,unsharp=5:5:1.0:5:5:0.0,hqdn3d=1.0:1.0:2.0:2.0" \
         -c:a copy \
@@ -279,8 +324,7 @@ convert_with_handbrake_settings() {
         fi
 
         echo "✓ Converted with HandBrake settings: $output_file"
-        files_processed=$((files_processed + 1))
-        log_processed_file "$output_file" "handbrake_conversion"
+        log_processed_file "$output_file" "handbrake_conversion" "mkv"
         return 0
     else
         echo "✗ Failed to convert with HandBrake settings: $file"
@@ -305,30 +349,47 @@ show_progress() {
 }
 
 show_stats() {
- echo -e "========== Processing Statistics ==========\nFiles processed successfully: $files_processed\nFiles failed: $files_failed\nTotal data processed: $(numfmt --to=iec-i --suffix=B $bytes_processed 2>/dev/null || echo "$bytes_processed bytes")\n\nFiles processed by type:"
-  if [ "$video_files_processed" -gt 0 ]; then
-    echo "  Video files: $video_files_processed"
-  fi
-  if [ "$mp4_files_processed" -gt 0 ]; then
-    echo "    - MP4: $mp4_files_processed"
-  fi
-  if [ "$mkv_files_processed" -gt 0 ]; then
-    echo "    - MKV: $mkv_files_processed"
-  fi
-  if [ "$audio_files_processed" -gt 0 ]; then
-    echo "  Audio files: $audio_files_processed"
-  fi
-  if [ "$mp3_files_processed" -gt 0 ]; then
-    echo "    - MP3: $mp3_files_processed"
-  fi
-  if [ "$flac_files_processed" -gt 0 ]; then
-    echo "    - FLAC: $flac_files_processed"
-  fi
-  if [ "$other_files_processed" -gt 0 ]; then
-    echo "  Other files: $other_files_processed"
-  fi
-  echo "==========================================="
+    # Debug output to help troubleshoot counter issues
+    if [ "$verbose" = "true" ]; then
+        echo "DEBUG: Stats counters at display time:"
+        echo "  files_processed=$files_processed"
+        echo "  files_failed=$files_failed"
+        echo "  files_skipped=$files_skipped"
+        echo "  thumbnails_removed=$thumbnails_removed"
+        echo "  metadata_files_removed=$metadata_files_removed"
+    fi
 
+    echo -e "========== Processing Statistics =========="
+    echo "Files processed successfully: $files_processed"
+    echo "Files failed: $files_failed"
+    echo "Files skipped (already processed): $files_skipped"
+    echo "Thumbnails removed: $thumbnails_removed"
+    echo "Metadata files (.nfo) removed: $metadata_files_removed"
+    echo "Total data processed: $(numfmt --to=iec-i --suffix=B $bytes_processed 2>/dev/null || echo "$bytes_processed bytes")"
+    echo ""
+    echo "Files processed by type:"
+    if [ "$video_files_processed" -gt 0 ]; then
+        echo "  Video files: $video_files_processed"
+    fi
+    if [ "$mp4_files_processed" -gt 0 ]; then
+        echo "    - MP4: $mp4_files_processed"
+    fi
+    if [ "$mkv_files_processed" -gt 0 ]; then
+        echo "    - MKV: $mkv_files_processed"
+    fi
+    if [ "$audio_files_processed" -gt 0 ]; then
+        echo "  Audio files: $audio_files_processed"
+    fi
+    if [ "$mp3_files_processed" -gt 0 ]; then
+        echo "    - MP3: $mp3_files_processed"
+    fi
+    if [ "$flac_files_processed" -gt 0 ]; then
+        echo "    - FLAC: $flac_files_processed"
+    fi
+    if [ "$other_files_processed" -gt 0 ]; then
+        echo "  Other files: $other_files_processed"
+    fi
+    echo "==========================================="
 }
 update_progress() {
     local current=$1
@@ -370,7 +431,6 @@ prompt_for_save_config() {
 check_config() {
     local config_file="$HOME/.stripmeta-config"
     if [ ! -f "$config_file" ]; then
-        echo "Config file does not exist."
         return 1
     elif [ ! -r "$config_file" ]; then
         echo "Config file is not readable."
@@ -388,14 +448,6 @@ load_conf() {
         # shellcheck source=/dev/null
         source "$config_file"
         echo "Configuration loaded successfully."
-
-        echo -e "\n== Ready to Process =="
-        read -p "Process all video and audio files, Continue? (y/N): " confirm
-        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-            echo "Operation cancelled - Press Enter to exit.."
-            read
-            exit 0
-        fi
         return 0
     else
         echo "Failed to load configuration."
@@ -410,7 +462,7 @@ save_config() {
     echo "clean_filenames=$clean_filenames" >> "$config_file"
     echo "replace_underscores=$replace_underscores" >> "$config_file"
     echo "capitalize_filenames=$capitalize_filenames" >> "$config_file"
-    echo "rename=$renameext" >> "$config_file"
+    echo "renameext=$renameext" >> "$config_file"
     echo "backups=$backups" >> "$config_file"
     echo "verbose=$verbose" >> "$config_file"
     echo "recursive=$recursive" >> "$config_file"
@@ -547,6 +599,9 @@ detect_file_content_type() {
 
 cleanup_directory_metadata() {
     local dir="$1"
+    local count_file
+    local nfo_count=0
+    local thumb_count=0
 
     if [ "$rm_metadata_files" = false ]; then
         return 0
@@ -554,84 +609,97 @@ cleanup_directory_metadata() {
 
     echo "Cleaning metadata files in directory: $dir"
 
-    find "$dir" -maxdepth 1 -name "*.nfo" -type f | while read -r nfo_file; do
+    # Count and remove NFO files
+    while IFS= read -r -d '' nfo_file; do
         if [ "$dry_run" = "true" ]; then
             echo "[DRY RUN] Would remove NFO file: $nfo_file"
         else
             rm "$nfo_file"
             echo "Removed NFO file: $nfo_file"
+            nfo_count=$((nfo_count + 1))
         fi
-    done
+    done < <(find "$dir" -maxdepth 1 -name "*.nfo" -type f -print0)
 
-    find "$dir" -maxdepth 1 -name "*thumb.jpg" -type f | while read -r thumb_file; do
+    # Count and remove thumbnail files
+    while IFS= read -r -d '' thumb_file; do
         if [ "$dry_run" = "true" ]; then
             echo "[DRY RUN] Would remove thumbnail: $thumb_file"
         else
             rm "$thumb_file"
             echo "Removed thumbnail: $thumb_file"
+            thumb_count=$((thumb_count + 1))
         fi
-    done
+    done < <(find "$dir" -maxdepth 1 -name "*thumb.jpg" -type f -print0)
 
-    find "$dir" -maxdepth 1 -name "*.jpg" -type f -size -100k | while read -r jpg_file; do
+    # Count and remove potential thumbnails
+    while IFS= read -r -d '' jpg_file; do
         if [ "$dry_run" = "true" ]; then
             echo "[DRY RUN] Would remove potential thumbnail: $jpg_file"
         else
             rm "$jpg_file"
             echo "Removed potential thumbnail: $jpg_file"
+            thumb_count=$((thumb_count + 1))
         fi
-    done
+    done < <(find "$dir" -maxdepth 1 -name "*.jpg" -type f -size -100k -print0)
+
+    # Update global counters
+    metadata_files_removed=$((metadata_files_removed + nfo_count))
+    thumbnails_removed=$((thumbnails_removed + thumb_count))
 }
 
 remove_assoc_metadata_files() {
     local file="$1"
-    local dir=$(dirname "$file")
-    local filename=$(basename "$file" .*)   # Get filename
-    local base_filename=$(echo "$filename" | sed 's/\.[^.]*$//')  # Remove resolution/quality part
+    local dir
+    local filename
+    local base_filename
+    local nfo_count=0
+    local thumb_count=0
+
+    dir=$(dirname "$file")
+    filename=$(basename "$file" .*)
+    base_filename=$(echo "$filename" | sed 's/\.[^.]*$//')
 
     # If flag is not set, return
     if [ "$rm_metadata_files" = false ]; then
         return 0
     fi
 
-    local nfo_patterns=(
-        "$dir/$filename.nfo"                # Exact match
-        "$dir/$base_filename.nfo"           # Without resolution
-        "$dir/"*"$base_filename"*".nfo"     # Wildcard match
-    )
+    # Remove exact filename NFO files
+    while IFS= read -r -d '' nfo; do
+        if [ "$dry_run" = "true" ]; then
+            echo "[DRY RUN] Would remove NFO file: $nfo"
+        else
+            rm "$nfo"
+            echo "Removed NFO file: $nfo"
+            nfo_count=$((nfo_count + 1))
+        fi
+    done < <(find "$dir" -maxdepth 1 -name "${filename}.nfo" -type f -print0)
 
-    local thumb_patterns=(
-        "$dir/$filename-thumb.jpg"          # With hyphen
-        "$dir/$filename.jpg"                # Direct match
-        "$dir/$base_filename"*"-thumb.jpg"  # Wildcard match
-        "$dir/$base_filename"*".jpg"        # Any jpg with base name
-        "$dir/thumb.jpg"                    # Generic thumb
-    )
+    # Remove base filename NFO files
+    while IFS= read -r -d '' nfo; do
+        if [ "$dry_run" = "true" ]; then
+            echo "[DRY RUN] Would remove NFO file: $nfo"
+        else
+            rm "$nfo"
+            echo "Removed NFO file: $nfo"
+            nfo_count=$((nfo_count + 1))
+        fi
+    done < <(find "$dir" -maxdepth 1 -name "${base_filename}.nfo" -type f -print0)
 
-    for pattern in "${nfo_patterns[@]}"; do
-        for nfo in $pattern; do
-            if [ -f "$nfo" ]; then
-                if [ "$dry_run" = "true" ]; then
-                    echo "[DRY RUN] Would remove NFO file: $nfo"
-                else
-                    rm "$nfo"
-                    echo "Removed NFO file: $nfo"
-                fi
-            fi
-        done
-    done
+    # Remove thumbnail files
+    while IFS= read -r -d '' thumb; do
+        if [ "$dry_run" = "true" ]; then
+            echo "[DRY RUN] Would remove thumbnail: $thumb"
+        else
+            rm "$thumb"
+            echo "Removed thumbnail: $thumb"
+            thumb_count=$((thumb_count + 1))
+        fi
+    done < <(find "$dir" -maxdepth 1 \( -name "${filename}-thumb.jpg" -o -name "${filename}.jpg" -o -name "${base_filename}*.jpg" -o -name "thumb.jpg" \) -type f -print0)
 
-    for pattern in "${thumb_patterns[@]}"; do
-        for thumb in $pattern; do
-            if [ -f "$thumb" ]; then
-                if [ "$dry_run" = "true" ]; then
-                    echo "[DRY RUN] Would remove thumbnail: $thumb"
-                else
-                    rm "$thumb"
-                    echo "Removed thumbnail: $thumb"
-                fi
-            fi
-        done
-    done
+    # Update global counters
+    metadata_files_removed=$((metadata_files_removed + nfo_count))
+    thumbnails_removed=$((thumbnails_removed + thumb_count))
 
     return 0
 }
@@ -639,6 +707,8 @@ remove_assoc_metadata_files() {
 convert_to_mp4() {
     local file="$1"
     local backup_dir="${2:-./backups}"
+    local output_file
+    local temp_output_file
 
     if [ "$convert_to_mp4" = false ]; then
         return 1
@@ -650,20 +720,25 @@ convert_to_mp4() {
         return 0
     fi
 
+    # Check if file exists before processing
+    if [ ! -f "$file" ]; then
+        echo "✗ Error: File not found: $file"
+        files_failed=$((files_failed + 1))
+        return 1
+    fi
+
     if [ "$backups" = "true" ]; then
         backup_file "$file" "$backup_dir"
     fi
 
-    local output_file="${file%.*}.mp4"
-    local temp_output_file="${file%.*}_converted.mp4"
+    output_file="${file%.*}.mp4"
+    temp_output_file="${file%.*}_converted.mp4"
 
-    if ffmpeg -i "$file" -c:v libx264 -c:a aac -strict experimental "$temp_output_file"; then
+    if ffmpeg -y -nostdin -i "$file" -c:v libx264 -c:a aac -strict experimental "$temp_output_file"; then
         rm "$file"
         mv "$temp_output_file" "$output_file"
-
         echo "✓ Converted to MP4: $output_file"
-        log_processed_file "$output_file"
-        files_processed=$((files_processed + 1))
+        log_processed_file "$output_file" "processed" "mp4"
         return 0
     else
         echo "✗ Failed to convert to MP4: $file"
@@ -682,8 +757,9 @@ backup_file() {
     local file="$1"
     if [ "$backups" = "true" ]; then
         local backup_dir="${2:-./backups}"
-        mkdir -p "$backup_dir"  # Get filename
-        local filename=$(basename "$file")
+        mkdir -p "$backup_dir"
+        local filename
+        filename=$(basename "$file")
         cp -p "$file" "$backup_dir/$filename"
         if [ "$verbose" = "true" ]; then
             echo "Backed up: $file -> $backup_dir/$filename"
@@ -694,6 +770,8 @@ backup_file() {
 
 is_file_processed() {
     local file="$1"
+    local file_hash
+
     if [ -z "$file" ]; then
         echo "Error: Empty filename passed to is_file_processed()" >&2
         return 1
@@ -705,15 +783,18 @@ is_file_processed() {
     fi
 
     [ -f "$processing_log" ] || touch "$processing_log"
-    local file_hash=$(sha256sum "$file" | awk '{print $1}')
+    file_hash=$(sha256sum "$file" | awk '{print $1}')
     grep -q "$file_hash" "$processing_log"
 }
 
 log_processed_file() {
     local file="$1"
     local operation="${2:-processed}"
-    local size=$(du -h "$file" | cut -f1)
     local file_type="${3:-unknown}"
+    local size
+    local file_hash
+    local abs_path
+    local timestamp
 
     if [ -z "$file" ]; then
         echo "Error: Empty filename passed to log_processed_file()" >&2
@@ -727,22 +808,58 @@ log_processed_file() {
 
     [ -f "$processing_log" ] || touch "$processing_log"
 
-    local file_hash=$(sha256sum "$file" | awk '{print $1}')
-    local abs_path=$(readlink -f "$file")
-    local timestamp=$(date +"%Y-%m-%d %H:%M:%S")
+    # Get file info
+    file_hash=$(sha256sum "$file" | awk '{print $1}')
+    abs_path=$(readlink -f "$file")
+    timestamp=$(date +"%Y-%m-%d %H:%M:%S")
+    size=$(du -h "$file" | cut -f1)
+
+    # Log to file
     echo "$timestamp | $file_hash | $operation | $size | $file_type | $abs_path" >> "$processing_log"
+
+    # Debug output
+    if [ "$verbose" = "true" ]; then
+        echo "DEBUG: Logging file: $file (type: $file_type)"
+    fi
+
+    # Increment counters - ONLY HERE, not in individual functions
     files_processed=$((files_processed+1))
     bytes_processed=$((bytes_processed+$(stat -c%s "$file" 2>/dev/null || stat -f%z "$file")))
 
+    # Increment type-specific counters
     case "$file_type" in
-        mp4) mp4_files_processed=$((mp4_files_processed+1)); video_files_processed=$((video_files_processed+1)) ;;
-        mkv) mkv_files_processed=$((mkv_files_processed+1)); video_files_processed=$((video_files_processed+1)) ;;
-        mp3) mp3_files_processed=$((mp3_files_processed+1)); audio_files_processed=$((audio_files_processed+1)) ;;
-        flac) flac_files_processed=$((flac_files_processed+1)); audio_files_processed=$((audio_files_processed+1)) ;;
-        audio_*) audio_files_processed=$((audio_files_processed+1)) ;;
-        video_*) video_files_processed=$((video_files_processed+1)) ;;
-        *) other_files_processed=$((other_files_processed+1)) ;;
+        mp4)
+            mp4_files_processed=$((mp4_files_processed+1))
+            video_files_processed=$((video_files_processed+1))
+            ;;
+        mkv)
+            mkv_files_processed=$((mkv_files_processed+1))
+            video_files_processed=$((video_files_processed+1))
+            ;;
+        mp3)
+            mp3_files_processed=$((mp3_files_processed+1))
+            audio_files_processed=$((audio_files_processed+1))
+            ;;
+        flac)
+            flac_files_processed=$((flac_files_processed+1))
+            audio_files_processed=$((audio_files_processed+1))
+            ;;
+        aac|ogg|wav|m4a|iff|8svx|m3v|aud)
+            audio_files_processed=$((audio_files_processed+1))
+            ;;
+        avi|mpg|mpeg|flv|mov|m4v)
+            video_files_processed=$((video_files_processed+1))
+            ;;
+        *)
+            other_files_processed=$((other_files_processed+1))
+            ;;
     esac
+
+    # Debug output for counters
+    if [ "$verbose" = "true" ]; then
+        echo "DEBUG: Current counters - processed: $files_processed, type: $file_type"
+    fi
+
     rotate_logs
 }
 
@@ -791,6 +908,10 @@ convert_audio() {
     local file="$1"
     local backup_dir="${2:-./backups}"
     local input_format="${3:-unknown}"
+    local output_file
+    local bitrate
+    local audio_codec
+    local temp_file
 
     if is_file_processed "$file"; then
         echo "Skipping already processed $input_format file: $file"
@@ -809,11 +930,9 @@ convert_audio() {
         backup_file "$file" "$backup_dir"
     fi
 
-    local output_file="${file%.*}.$audio_output_format"
+    output_file="${file%.*}.$audio_output_format"
+    bitrate="${audio_bitrates[$audio_output_format]:-192k}"
 
-    local bitrate="${audio_bitrates[$audio_output_format]:-192k}"
-
-    local audio_codec
     case "$audio_output_format" in
         mp3)
             audio_codec="libmp3lame"
@@ -847,7 +966,7 @@ convert_audio() {
             log_processed_file "$file"
             return 0
         else
-            local temp_file="${file%.*}_stripped.$input_format"
+            temp_file="${file%.*}_stripped.$input_format"
             if ffmpeg -i "$file" -c:a copy -map_metadata -1 "$temp_file"; then
                 mv "$temp_file" "$file"
                 echo "✓ Removed metadata with ffmpeg: $file"
@@ -903,87 +1022,143 @@ process_m3u() {
 
 process_files() {
     local dir="${1:-.}"
-    cleanup_directory_metadata "$dir"
-    local find_cmd=("find" "$dir" "-type" "f")
-    if [ "$recursive" = false ]; then
-        find_cmd+=("-maxdepth" "1")
-    fi
-    find_cmd+=(\(
-        "-name" "*.mp4" "-o"
-        "-name" "*.mpg" "-o"
-        "-name" "*.mpeg" "-o"
-        "-name" "*.avi" "-o"
-        "-name" "*.m4v" "-o"
-        "-name" "*.mkv" "-o"
-        "-name" "*.flv" "-o"
-        "-name" "*.mov" "-o"
-        "-name" "*.mp3" "-o"
-        "-name" "*.wav" "-o"
-        "-name" "*.ogg" "-o"
-        "-name" "*.iff" "-o"
-        "-name" "*.8svx" "-o"
-        "-name" "*.flac" "-o"
-        "-name" "*.aac" "-o"
-        "-name" "*.m4a" "-o"
-        "-name" "*.m3u" "-o"
-        "-name" "*.m3v" "-o"
-        "-name" "*.aud"
-    \))
+    local file_count=0
 
-    while IFS= read -r file; do
-        ext="${file##*.}"
-        ext=$(echo "$ext" | tr '[:upper:]' '[:lower:]')
-        case "$ext" in
-            mp3)
-                if [ "$audio_output_format" = "mp3" ]; then
-                    process_mp3 "$file" "$backup_dir"
-                else
-                    convert_audio "$file" "$backup_dir" "mp3"
-                fi
-                ;;
-            wav|ogg|flac|aac|m4a|iff|8svx|m3v|aud)
-                convert_audio "$file" "$backup_dir" "$ext"
-                ;;
-            m3u)
-                process_m3u "$file" "$backup_dir"
-                ;;
-            m4v|mkv|mp4)
-                strip_metadata "$file" "$backup_dir"
-                if [ "$use_handbrake_settings" = "true" ]; then
-                    convert_with_handbrake_settings "$file" "$backup_dir"
-                fi
-                ;;
-            mpg|mpeg|avi|flv|mov)
-                strip_metadata "$file" "$backup_dir"
-                if [ "$conv_oldfileformats" = "true" ]; then
-                    convert_to_mp4 "$file" "$backup_dir"
-                fi
-                ;;
-        esac
-    done < <("${find_cmd[@]}")
+    echo "DEBUG: Starting to process files in directory: $dir"
+    cleanup_directory_metadata "$dir"
+
+    # Use a more robust find approach with null delimiters for spaces
+    if [ "$recursive" = false ]; then
+        while IFS= read -r -d '' file; do
+            file_count=$((file_count + 1))
+            if [ "$verbose" = "true" ]; then
+                echo "DEBUG: Found file #$file_count: $file"
+            fi
+            process_single_file "$file"
+        done < <(find "$dir" -maxdepth 1 -type f \( \
+            -iname "*.mp4" -o \
+            -iname "*.mpg" -o \
+            -iname "*.mpeg" -o \
+            -iname "*.avi" -o \
+            -iname "*.m4v" -o \
+            -iname "*.mkv" -o \
+            -iname "*.flv" -o \
+            -iname "*.mov" -o \
+            -iname "*.mp3" -o \
+            -iname "*.wav" -o \
+            -iname "*.ogg" -o \
+            -iname "*.iff" -o \
+            -iname "*.8svx" -o \
+            -iname "*.flac" -o \
+            -iname "*.aac" -o \
+            -iname "*.m4a" -o \
+            -iname "*.m3u" -o \
+            -iname "*.m3v" -o \
+            -iname "*.aud" \
+        \) -print0)
+    else
+        while IFS= read -r -d '' file; do
+            file_count=$((file_count + 1))
+            if [ "$verbose" = "true" ]; then
+                echo "DEBUG: Found file #$file_count: $file"
+            fi
+            process_single_file "$file"
+        done < <(find "$dir" -type f \( \
+            -iname "*.mp4" -o \
+            -iname "*.mpg" -o \
+            -iname "*.mpeg" -o \
+            -iname "*.avi" -o \
+            -iname "*.m4v" -o \
+            -iname "*.mkv" -o \
+            -iname "*.flv" -o \
+            -iname "*.mov" -o \
+            -iname "*.mp3" -o \
+            -iname "*.wav" -o \
+            -iname "*.ogg" -o \
+            -iname "*.iff" -o \
+            -iname "*.8svx" -o \
+            -iname "*.flac" -o \
+            -iname "*.aac" -o \
+            -iname "*.m4a" -o \
+            -iname "*.m3u" -o \
+            -iname "*.m3v" -o \
+            -iname "*.aud" \
+        \) -print0)
+    fi
+
+    echo "DEBUG: Total files found and processed: $file_count"
 
     if [ "$recursive" = true ]; then
-        find "$dir" -mindepth 1 -type d | while read -r subdir; do
+        while IFS= read -r -d '' subdir; do
             if [ "$verbose" = "true" ]; then
                 echo "Processing subdirectory: $subdir"
             fi
             cleanup_directory_metadata "$subdir"
-        done
+        done < <(find "$dir" -mindepth 1 -type d -print0)
     fi
+}
+
+# New helper function to process individual files
+process_single_file() {
+    local file="$1"
+    local ext="${file##*.}"
+    ext=$(echo "$ext" | tr '[:upper:]' '[:lower:]')
+
+    if [ "$verbose" = "true" ]; then
+        echo "DEBUG: Processing single file: $file (ext: $ext)"
+    fi
+
+    case "$ext" in
+        mp3)
+            if [ "$audio_output_format" = "mp3" ]; then
+                process_mp3 "$file" "$backup_dir"
+            else
+                convert_audio "$file" "$backup_dir" "mp3"
+            fi
+            ;;
+        wav|ogg|flac|aac|m4a|iff|8svx|m3v|aud)
+            convert_audio "$file" "$backup_dir" "$ext"
+            ;;
+        m3u)
+            process_m3u "$file" "$backup_dir"
+            ;;
+        m4v|mkv|mp4)
+            strip_metadata "$file" "$backup_dir"
+            if [ "$use_handbrake_settings" = "true" ]; then
+                convert_with_handbrake_settings "$file" "$backup_dir"
+            fi
+            ;;
+        mpg|mpeg|avi|flv|mov)
+            strip_metadata "$file" "$backup_dir"
+            if [ "$conv_oldfileformats" = "true" ]; then
+                convert_to_mp4 "$file" "$backup_dir"
+            fi
+            ;;
+    esac
 }
 
 strip_metadata() {
     local file="$1"
     local backup_dir="${2:-./backups}"
     local file_type
+    local new_name
+    local temp_file
 
     if is_file_processed "$file"; then
         echo "Skipping already processed file: $file"
+        files_skipped=$((files_skipped + 1))
         return 0
     fi
 
     file=$(clean_filename "$file")
     echo "Processing: $file"
+
+    # Check if file exists before processing
+    if [ ! -f "$file" ]; then
+        echo "✗ Error: File not found: $file"
+        files_failed=$((files_failed + 1))
+        return 1
+    fi
 
     remove_assoc_metadata_files "$file"
 
@@ -993,11 +1168,10 @@ strip_metadata() {
     fi
 
     backup_file "$file" "$backup_dir"
-
     file_type=$(detect_file_type "$file")
 
     if [ "$renameext" = "true" ]; then
-        local new_name="${file%.*}.$newfileext"
+        new_name="${file%.*}.$newfileext"
         mv "$file" "$new_name"
         file="$new_name"
         echo "Renamed to: $file"
@@ -1012,12 +1186,11 @@ strip_metadata() {
     fi
 
     if [[ "$file_type" == "avi" ]]; then
-        local temp_file="${file%.*}_stripped.avi"
-        if ffmpeg -i "$file" -codec copy -map_metadata -1 "$temp_file"; then
+        temp_file="${file%.*}_stripped.avi"
+        if ffmpeg -y -nostdin -i "$file" -codec copy -map_metadata -1 "$temp_file"; then
             mv "$temp_file" "$file"
             echo "✓ Processed AVI with ffmpeg: $file"
             log_processed_file "$file" "processed" "avi"
-            files_processed=$((files_processed + 1))
             return 0
         else
             echo "✗ Failed to process AVI with ffmpeg: $file"
@@ -1038,10 +1211,11 @@ strip_metadata() {
 process_mkv() {
     local file="$1"
     local backup_dir="${2:-./backups}"
+    local new_name
 
-    # Check if file has been processed
     if is_file_processed "$file"; then
         echo "Skipping already processed file: $file"
+        files_skipped=$((files_skipped + 1))
         return 0
     fi
 
@@ -1055,7 +1229,7 @@ process_mkv() {
     fi
 
     if [ "$renameext" = "true" ]; then
-        local new_name="${file%.*}.$newfileext"
+        new_name="${file%.*}.$newfileext"
         mv "$file" "$new_name"
         file="$new_name"
         echo "Renamed to: $file"
@@ -1067,8 +1241,8 @@ process_mkv() {
 
     if mkvpropedit "$file" -d title; then
         echo "✓ Processed with mkvpropedit: $file"
-        files_processed=$((files_processed + 1))
         log_processed_file "$file" "processed" "mkv"
+        return 0
     else
         echo "✗ Failed to process with mkvpropedit: $file"
         files_failed=$((files_failed + 1))
@@ -1080,7 +1254,7 @@ set_drag_drop_defaults() {
     clean_filenames=true
     replace_underscores=true
     capitalize_filenames=false  # Set to false by default for drag and drop
-    rename=true
+    renameext=true
     backups=true
     rm_metadata_files=true
 }
@@ -1088,6 +1262,7 @@ set_drag_drop_defaults() {
 main() {
     local is_drag_drop=false
 
+    # Check for drag and drop first
     if [ $# -gt 0 ]; then
         for path in "$@"; do
             if [ -e "$path" ]; then
@@ -1103,8 +1278,8 @@ main() {
     fi
 
     check_dependencies
-    check_config
 
+    # Handle command line arguments
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --check-update)
@@ -1165,7 +1340,7 @@ main() {
                 shift
                 ;;
             --rename)
-                rename=true
+                renameext=true
                 shift
                 ;;
             --recursive)
@@ -1192,18 +1367,44 @@ main() {
         esac
     done
 
+    # If no command line arguments, start interactive mode
     if [ $# -eq 0 ]; then
-    load_last_choices
-    echo -e "==== StripMeta File Processor ====\nScript version: $SCRIPT_VERSION"
+        echo -e "==== StripMeta File Processor ====\nScript version: $SCRIPT_VERSION"
 
+        # CHECK FOR CONFIG FILE FIRST
         if check_config; then
-            echo "Say 'n', theres a bug,  loading the config!"
-            read -p "StripMeta config file found. Use it? [y/N]: " use_config
-            if [[ "$use_config" =~ ^[Yy]$ ]];  then
-            load_conf
-            return 0
+            echo -e "\nStripMeta config file found!"
+            read -p "Do you want to use the saved configuration? [y/N]: " use_config
+            if [[ "$use_config" =~ ^[Yy]$ ]]; then
+                if load_conf; then
+                    echo -e "\nConfiguration loaded successfully!"
+                    echo -e "\n== Ready to Process =="
+                    read -p "Process all video and audio files with loaded settings? (y/N): " confirm
+                    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                        echo -e "\nStarting processing with config settings..."
+                        cleanup_directory_metadata "."
+                        process_files
+                        show_stats
+                        echo "Processing complete. Press Enter to exit..."
+                        read
+                        exit 0
+                    else
+                        echo "Operation cancelled - Press Enter to exit.."
+                        read
+                        exit 0
+                    fi
+                else
+                    echo "Failed to load configuration. Continuing with interactive setup..."
+                fi
+            else
+                echo "Continuing with interactive setup..."
             fi
         fi
+
+        # ONLY REACH HERE IF NO CONFIG OR USER DECLINED CONFIG
+        # Load last choices for defaults
+        load_last_choices
+
         echo -e "\n== Filename Handling Options =="
         if [ "$renameext" = false ]; then
             read -p "Rename video file extensions to $newfileext? [y/N]: " rename_response
@@ -1253,13 +1454,14 @@ main() {
             fi
         fi
 
-        if [ "$convert_to_mp4" = true ]; then
-        read -p "Convert AVI, MPG, FLV, MOV, MPEG (Old Movie Formats) to MP4? [y/N]: " convert_specific_response
+        if [ "$convert_to_mp4" = false ]; then
+            read -p "Convert AVI, MPG, FLV, MOV, MPEG (Old Movie Formats) to MP4? [y/N]: " convert_specific_response
             if [[ "$convert_specific_response" =~ ^[Yy]$ ]]; then
                 conv_oldfileformats=true
                 convert_to_mp4=true
             fi
         fi
+
         echo -e "\n== General Options =="
         if [ "$backups" = false ]; then
             read -p "Backup files to $backup_dir folder? [y/N]: " backups_response
@@ -1271,14 +1473,14 @@ main() {
         if [ "$rm_metadata_files" = false ]; then
             read -p "Remove .nfo and thumb.jpg files? [y/N]: " metadata_files_response
             if [[ "$metadata_files_response" =~ ^[Yy]$ ]]; then
-            rm_metadata_files=true
+                rm_metadata_files=true
             fi
         fi
 
         if [ "$recursive" = false ]; then
-        read -p "Process files recursively? [y/N]: " recursive_response
+            read -p "Process files recursively? [y/N]: " recursive_response
             if [[ "$recursive_response" =~ ^[Yy]$ ]]; then
-            recursive=true
+                recursive=true
             fi
         fi
 
@@ -1291,63 +1493,29 @@ main() {
             exit 0
         fi
 
-    cleanup_directory_metadata "."
-    process_files
-    show_stats
+        cleanup_directory_metadata "."
+        process_files
+        show_stats
 
     else
-          for path in "$@"; do
+        # COMMAND LINE ARGUMENTS PROVIDED - PROCESS INDIVIDUAL FILES
+        for path in "$@"; do
             if [ -f "$path" ]; then
-                ext="${path##*.}"
-                ext=$(echo "$ext" | tr '[:upper:]' '[:lower:]')
-                case "$ext" in
-                    mp3)
-                        cleanup_directory_metadata "$(dirname "$path")"
-                        process_mp3 "$path" "$backup_dir"
-                        ;;
-                    wav)
-                        cleanup_directory_metadata "$(dirname "$path")"
-                        convert_audio "$path" "$backup_dir" "wav"
-                        ;;
-                    ogg)
-                        cleanup_directory_metadata "$(dirname "$path")"
-                        convert_audio "$path" "$backup_dir" "ogg"
-                        ;;
-                    iff)
-                        cleanup_directory_metadata "$(dirname "$path")"
-                        convert_audio "$path" "$backup_dir" "iff"
-                        ;;
-                  mpeg|mpg|mp4|avi|m4v|flv|mov)
-                        cleanup_directory_metadata "$(dirname "$path")"
-                        strip_metadata "$path" "$backup_dir"
-                        if [ "$conv_oldfileformats" = "true" ]; then
-                            convert_to_mp4 "$path" "$backup_dir"
-                        elif [ "$use_handbrake_settings" = "true" ]; then
-                            convert_with_handbrake_settings "$path" "$backup_dir"
-                        fi
-                        ;;
-                    mkv)
-                        cleanup_directory_metadata "$(dirname "$path")"
-                        process_mkv "$path" "$backup_dir"
-                        if [ "$use_handbrake_settings" = "true" ]; then
-                            convert_with_handbrake_settings "$path" "$backup_dir"
-                        fi
-                        ;;
-                    *)
-                        echo "Unsupported file type: $path"
-                        ;;
-                esac
+                cleanup_directory_metadata "$(dirname "$path")"
+                process_single_file "$path"
             elif [ -d "$path" ]; then
                 cleanup_directory_metadata "$path"
-
                 echo "Processing files in directory: $path"
                 process_files "$path"
             else
                 echo "Not a file or directory: $path"
             fi
         done
+        show_stats
     fi
+
     echo "Processing complete. Press Enter to exit..."
     read
 }
+
 main "$@"
