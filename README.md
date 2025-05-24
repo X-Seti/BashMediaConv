@@ -15,7 +15,7 @@
 - **Metadata Removal**: Complete EXIF, ID3, and embedded data cleanup
 - **Format Conversion**: Modern codec support with quality presets
 
-### 🖥️ **User Interface**
+### 🖥️ **User Interface** -- coming soon (stripmeta-gui) version
 - **Full GUI Mode**: Intuitive graphical interface for all operations
 - **File Browser**: Visual file and folder selection
 - **Real-time Progress**: Live processing updates with activity log
