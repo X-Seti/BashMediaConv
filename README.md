@@ -54,22 +54,22 @@ sudo dnf install perl-Image-ExifTool mkvtoolnix coreutils ffmpeg zenity ImageMag
 #### GUI Mode (Recommended)
 ```bash
 # Make executable
-chmod +x stripmeta-gui.sh
+chmod +x stripmeta-wip.sh
 
 # Double-click from file manager OR run:
-./stripmeta-gui.sh --gui
+./stripmeta-wip.sh --gui
 ```
 
 #### Command Line
 ```bash
 # Process specific files
-./stripmeta-gui.sh "Movie File.mkv" "Song.mp3"
+./stripmeta-wip.sh "Movie File.mkv" "Song.mp3"
 
 # Process directory recursively
-./stripmeta-gui.sh --recursive --backups "/path/to/media"
+./stripmeta-wip.sh --recursive --backups "/path/to/media"
 
 # Interactive terminal mode
-./stripmeta-gui.sh
+./stripmeta-wip.sh
 ```
 
 ## 📋 Supported Formats
@@ -204,7 +204,7 @@ use_handbrake_settings=true
 | **ffmpeg** | Media conversion | `apt install ffmpeg` |
 | **sha256sum** | File verification | `apt install coreutils` |
 
-### GUI Support
+### GUI Support -- Coming soon!
 | Package | Desktop | Installation |
 |---------|---------|--------------|
 | **zenity** | GNOME/Unity | `apt install zenity` |
@@ -257,7 +257,7 @@ sudo apt install yad     # Advanced option
 #### Permission Errors
 ```bash
 # Fix script permissions
-chmod +x stripmeta-gui.sh
+chmod +x stripmeta-wip.sh
 
 # Fix file permissions
 sudo chown -R $USER:$USER /path/to/media/
@@ -266,7 +266,7 @@ sudo chown -R $USER:$USER /path/to/media/
 ### Debug Mode
 ```bash
 # Enable verbose logging
-./stripmeta-gui.sh --verbose --dry-run
+./stripmeta-wip.sh --verbose --dry-run
 
 # Check processing log
 tail -f .processed_files.log
@@ -302,8 +302,8 @@ We welcome contributions! Please see our guidelines:
 ```bash
 git clone https://github.com/X-Seti/stripmeta.git
 cd stripmeta
-chmod +x stripmeta-gui.sh
-./stripmeta-gui.sh --version
+chmod +x stripmeta-wip.sh
+./stripmeta-wip.sh --version
 ```
 
 ## 📄 License
