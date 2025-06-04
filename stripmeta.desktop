@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=KonqPopupMenu/Plugin
+MimeType=video/*;audio/*;application/octet-stream;
+Actions=StripMetadata;
+
+[Desktop Action StripMetadata]
+Name=Strip Metadata
+Exec=/opt/stripmeta/stripmeta-kde.sh %F
+Icon=video-x-generic
