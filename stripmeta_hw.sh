@@ -1,9 +1,24 @@
 #!/bin/bash
-#Mooheda (X-Seti) 16/Apr25 - 25/May25 - Enhanced with Hardware Encoding
+#Mooheda (X-Seti) 16/Apr25 - 21/Aug25 - Enhanced with Hardware Encoding
 #Dependencies: "exiftool" "mkvpropedit" "sha256sum" "ffmpeg" "imagemagick"
 
+# SUMMARY OF CHANGES:
+# 1. Process files FIRST, then rename AFTER successful processing
+# 2. Enhanced format detection with multiple fallback methods
+# 3. Better error handling for format detection
+# 4. Cleaner logic flow: Clean filename -> Process -> Rename -> Log
+
+# The new order is:
+# 1. Clean filename (if needed)
+# 2. Create backup
+# 3. Remove metadata files
+# 4. Detect format properly
+# 5. Process the file (remove metadata)
+# 6. Rename extension (if requested and processing succeeded)
+# 7. Log the result
+
 # Script version - date - add_gui on click.
-SCRIPT_VERSION="2.1.0 - 21-08-25"
+SCRIPT_VERSION="2.1.1 - 21-08-25"
 
 # Global variables - Initialize all counters to prevent arithmetic errors
 clean_filenames=false
@@ -22,8 +37,11 @@ use_handbrake_settings=false
 process_images=false
 optimize_images=false
 convert_images=false
+force_reprocess=false
+ignore_processed_log=false
 # NEW: Hardware encoding options
 use_hardware_encoding=false
+use_hardware_for_all=false
 hardware_encoder_type="auto"
 hardware_quality=22
 enable_hardware_decode=false
@@ -168,38 +186,43 @@ detect_hardware_encoders() {
     return 0
 }
 
-# NEW: Hardware encoding function
+
 encode_video_hardware() {
     local input_file="$1"
     local output_file="$2"
     local encoder="${3:-$hardware_encoder_type}"
     local quality="${4:-$hardware_quality}"
     local temp_file="${output_file%.*}_hwenc_temp.${output_file##*.}"
-    
+
     echo "🔧 Hardware encoding: $input_file -> $output_file"
     echo "   Encoder: ${hardware_encoders[$encoder]} ($encoder)"
     echo "   Quality: $quality (lower = better quality)"
-    
+
+    # Show input file info
+    local input_size=$(du -h "$input_file" 2>/dev/null | cut -f1 || echo "unknown")
+    echo "   Input size: $input_size"
+
     if [ "$dry_run" = "true" ]; then
         echo "[DRY RUN] Would hardware encode: '$input_file' with $encoder"
         return 0
     fi
-    
+
     # Build ffmpeg command with hardware acceleration
     local ffmpeg_cmd=(
         "ffmpeg" "-y" "-nostdin"
     )
-    
+
     # Add hardware decoding if enabled and available
     if [ "$enable_hardware_decode" = "true" ]; then
         ffmpeg_cmd+=("-hwaccel" "auto")
+        echo "   Hardware decoding: Enabled"
     fi
-    
+
     ffmpeg_cmd+=(
         "-i" "$input_file"
         "-c:v" "$encoder"
     )
-    
+
     # Set quality parameters based on encoder type
     case "$encoder" in
         *_rkmpp|*_v4l2m2m)
@@ -218,46 +241,156 @@ encode_video_hardware() {
             ffmpeg_cmd+=("-crf" "$quality" "-preset" "fast")
             ;;
     esac
-    
+
     # Add audio and metadata options
     ffmpeg_cmd+=(
         "-c:a" "aac"
         "-b:a" "192k"
         "-map_metadata" "-1"
         "-movflags" "+faststart"
+        # ADD PROGRESS REPORTING
+        "-progress" "pipe:1"
         "$temp_file"
     )
-    
-    # Execute encoding
+
+    # Execute encoding with progress monitoring
     echo "⚡ Starting hardware encoding..."
+    echo "💭 This may take a while for large files..."
+
     local start_time=$(date +%s)
-    
-    if "${ffmpeg_cmd[@]}" 2>/dev/null; then
+
+    # Show the actual command being run (for debugging)
+    if [ "$verbose" = "true" ]; then
+        echo "DEBUG: Running command: ${ffmpeg_cmd[*]}" >&2
+    fi
+
+    # Run ffmpeg with progress monitoring
+    if "${ffmpeg_cmd[@]}" 2>&1 | while IFS= read -r line; do
+        case "$line" in
+            frame=*)
+                # Extract frame number and show progress
+                local frame=$(echo "$line" | sed 's/frame=//')
+                printf "\r🎬 Processing frame: %s" "$frame"
+                ;;
+            fps=*)
+                # Extract FPS
+                local fps=$(echo "$line" | sed 's/fps=//')
+                printf " | FPS: %s" "$fps"
+                ;;
+            bitrate=*)
+                # Extract bitrate
+                local bitrate=$(echo "$line" | sed 's/bitrate=//')
+                printf " | Bitrate: %s" "$bitrate"
+                ;;
+            speed=*)
+                # Extract speed
+                local speed=$(echo "$line" | sed 's/speed=//')
+                printf " | Speed: %s" "$speed"
+                ;;
+            *"error"*|*"Error"*|*"ERROR"*)
+                echo -e "\n❌ Error during encoding: $line" >&2
+                ;;
+            *"Conversion failed"*|*"Invalid"*|*"No such file"*)
+                echo -e "\n❌ Encoding failed: $line" >&2
+                ;;
+        esac
+    done; then
         local end_time=$(date +%s)
         local duration=$((end_time - start_time))
-        
+
+        echo -e "\n⏱️  Encoding completed in ${duration}s"
+
         # Get file sizes for comparison
-        local input_size=$(du -h "$input_file" 2>/dev/null | cut -f1 || echo "unknown")
         local output_size=$(du -h "$temp_file" 2>/dev/null | cut -f1 || echo "unknown")
-        
-        if mv "$temp_file" "$output_file" 2>/dev/null; then
-            echo "✅ Hardware encoding completed in ${duration}s"
-            echo "   Input: $input_size → Output: $output_size"
-            log_processed_file "$output_file" "hardware_encoded" "$(detect_file_type "$output_file")"
-            return 0
+
+        # Verify output file was created and has content
+        if [ -f "$temp_file" ] && [ -s "$temp_file" ]; then
+            if mv "$temp_file" "$output_file" 2>/dev/null; then
+                echo "✅ Hardware encoding completed successfully"
+                echo "   Input: $input_size → Output: $output_size"
+
+                # Calculate compression ratio
+                if command -v stat >/dev/null 2>&1; then
+                    local input_bytes=$(stat -c%s "$input_file" 2>/dev/null || echo "0")
+                    local output_bytes=$(stat -c%s "$output_file" 2>/dev/null || echo "0")
+                    if [ "$input_bytes" -gt 0 ] && [ "$output_bytes" -gt 0 ]; then
+                        local ratio=$((input_bytes * 100 / output_bytes))
+                        echo "   Compression: ${ratio}% of original size"
+                    fi
+                fi
+
+                return 0
+            else
+                echo "❌ Failed to move encoded file to final location"
+                rm -f "$temp_file" 2>/dev/null
+                return 1
+            fi
         else
-            echo "❌ Failed to move encoded file"
+            echo "❌ Output file was not created or is empty"
             rm -f "$temp_file" 2>/dev/null
             return 1
         fi
     else
-        echo "❌ Hardware encoding failed with $encoder"
+        echo -e "\n❌ Hardware encoding failed with $encoder"
         rm -f "$temp_file" 2>/dev/null
-        
-        # Fallback to software encoding if hardware fails
-        echo "🔄 Falling back to software encoding..."
-        return encode_video_software "$input_file" "$output_file" "$quality"
+
+        # Try to diagnose the issue
+        echo "🔍 Diagnosing hardware encoding failure..."
+
+        # Test if encoder is actually available
+        if ! ffmpeg -hide_banner -f lavfi -i testsrc=duration=1:size=320x240:rate=1 -t 1 -c:v "$encoder" -f null - 2>/dev/null; then
+            echo "❌ Encoder '$encoder' is not working properly"
+            echo "💡 Try running: ./stripmeta_hw.sh --detect-encoders"
+        fi
+
+        # Check input file
+        if ! ffmpeg -i "$input_file" -t 1 -f null - 2>/dev/null; then
+            echo "❌ Input file '$input_file' may be corrupted or unreadable"
+        fi
+
+        return 1
     fi
+}
+
+test_hardware_encoding_simple() {
+    local test_encoder="${1:-$hardware_encoder_type}"
+
+    echo "🧪 Testing hardware encoder: $test_encoder"
+
+    # Create a very short test input
+    local test_input="/tmp/hw_test_input.mp4"
+    local test_output="/tmp/hw_test_output.mp4"
+
+    # Create test video
+    if ffmpeg -y -f lavfi -i testsrc=duration=3:size=640x480:rate=30 \
+        -c:v libx264 -preset ultrafast -t 3 "$test_input" 2>/dev/null; then
+
+        echo "✅ Test input created"
+
+        # Test hardware encoding
+        if ffmpeg -y -i "$test_input" -c:v "$test_encoder" -crf 22 \
+            -c:a aac -t 2 "$test_output" 2>/dev/null; then
+
+            if [ -f "$test_output" ] && [ -s "$test_output" ]; then
+                echo "✅ Hardware encoder '$test_encoder' is working!"
+                echo "   Test output: $(du -h "$test_output" | cut -f1)"
+
+                # Cleanup
+                rm -f "$test_input" "$test_output" 2>/dev/null
+                return 0
+            else
+                echo "❌ Test output file not created"
+            fi
+        else
+            echo "❌ Hardware encoding test failed"
+        fi
+    else
+        echo "❌ Failed to create test input"
+    fi
+
+    # Cleanup
+    rm -f "$test_input" "$test_output" 2>/dev/null
+    return 1
 }
 
 # NEW: Software encoding fallback
@@ -625,81 +758,8 @@ if [ ! -t 1 ]; then
     fi
 fi
 
-clean_filename() {
-    local file="$1"
-    local dir filename extension name new_filename new_path
-    local changed=false
 
-    if [ ! -f "$file" ]; then
-        echo "Error: File does not exist: $file" >&2
-        return 1
-    fi
 
-    if [ "$verbose" = "true" ]; then
-        echo "DEBUG: clean_filename input: '$file'"
-    fi
-
-    dir=$(dirname "$file")
-    filename=$(basename "$file")
-    extension="${filename##*.}"
-    name="${filename%.*}"
-    new_filename="$name"
-
-    # Clean filename operations
-    if [ "$clean_filenames" = true ]; then
-        new_filename=$(echo "$new_filename" | sed 's/\./ /g')
-        changed=true
-    fi
-
-    if [ "$replace_underscores" = true ]; then
-        new_filename=$(echo "$new_filename" | sed 's/_/ /g')
-        changed=true
-    fi
-
-    if [ "$capitalize_filenames" = true ]; then
-        new_filename=$(echo "$new_filename" | awk '{for(i=1;i<=NF;i++){ $i=toupper(substr($i,1,1)) tolower(substr($i,2)) }}1')
-        changed=true
-    fi
-
-    # Handle special characters more safely
-    new_filename=$(echo "$new_filename" | sed 's/[^[:alnum:][:space:]._-]/_/g')
-
-    # Remove multiple spaces and trim
-    new_filename=$(echo "$new_filename" | sed 's/  */ /g' | sed 's/^ *//;s/ *$//')
-
-    # Add extension back
-    new_filename="$new_filename.$extension"
-    new_path="$dir/$new_filename"
-
-    if [ "$changed" = true ] && [ "$filename" != "$new_filename" ]; then
-        if [ "$dry_run" = "true" ]; then
-            echo "[DRY RUN] Would rename: '$file' -> '$new_path'"
-            echo "$file"
-            return 0
-        else
-            # Check if target exists
-            if [ -e "$new_path" ] && [ "$new_path" != "$file" ]; then
-                echo "Warning: Target filename already exists: '$new_path'"
-                echo "Skipping rename to avoid overwrite"
-                echo "$file"
-                return 0
-            fi
-
-            if mv "$file" "$new_path" 2>/dev/null; then
-                echo "Renamed: '$file' -> '$new_path'"
-                echo "$new_path"
-                return 0
-            else
-                echo "Failed to rename: '$file'"
-                echo "$file"
-                return 1
-            fi
-        fi
-    fi
-
-    echo "$file"
-    return 0
-}
 
 backup_file() {
     local file="$1"
@@ -741,7 +801,7 @@ backup_file() {
 
 is_file_processed() {
     local file="$1"
-    local file_hash
+    local file_hash abs_path
 
     if [ -z "$file" ]; then
         echo "Error: Empty filename passed to is_file_processed()" >&2
@@ -753,9 +813,74 @@ is_file_processed() {
         return 1
     fi
 
+    # If force reprocess or ignore log is enabled, always return false (not processed)
+    if [ "$force_reprocess" = "true" ] || [ "$ignore_processed_log" = "true" ]; then
+        if [ "$verbose" = "true" ]; then
+            echo "DEBUG: Override enabled, will process: '$file'"
+        fi
+        return 1  # Return 1 means "not processed" - will process the file
+    fi
+
+    # Create log file if it doesn't exist
     [ -f "$processing_log" ] || touch "$processing_log"
 
-    # Use SHA256 hash for reliable file identification
+    # Get file hash for reliable identification
+    if command -v sha256sum >/dev/null 2>&1; then
+        file_hash=$(sha256sum "$file" 2>/dev/null | awk '{print $1}')
+    elif command -v shasum >/dev/null 2>&1; then
+        file_hash=$(shasum -a 256 "$file" 2>/dev/null | awk '{print $1}')
+    else
+        file_hash=""
+    fi
+
+    abs_path=$(readlink -f "$file" 2>/dev/null || realpath "$file" 2>/dev/null || echo "$file")
+
+    # Check if file hash exists in the log
+    if [ -n "$file_hash" ]; then
+        if grep -q "$file_hash" "$processing_log" 2>/dev/null; then
+            if [ "$verbose" = "true" ]; then
+                echo "DEBUG: File already processed (hash match): '$file'"
+            fi
+            return 0  # Return 0 means "already processed" - will skip
+        fi
+    fi
+
+    # Secondary check: look for absolute path in log
+    if grep -qF "$abs_path" "$processing_log" 2>/dev/null; then
+        if [ "$verbose" = "true" ]; then
+            echo "DEBUG: File already processed (path match): '$file'"
+        fi
+        return 0  # Return 0 means "already processed" - will skip
+    fi
+
+    # File not found in log - not processed yet
+    if [ "$verbose" = "true" ]; then
+        echo "DEBUG: File not in processing log, will process: '$file'"
+    fi
+    return 1  # Return 1 means "not processed" - will process the file
+}
+
+
+
+log_processed_file() {
+    local file="$1"
+    local operation="${2:-processed}"
+    local file_type="${3:-unknown}"
+    local size file_hash abs_path timestamp
+
+    if [ -z "$file" ]; then
+        echo "Error: Empty filename passed to log_processed_file()" >&2
+        return 1
+    fi
+
+    if [ ! -f "$file" ]; then
+        echo "Error: File does not exist: '$file'" >&2
+        return 1
+    fi
+
+    [ -f "$processing_log" ] || touch "$processing_log"
+
+    # Get file info safely
     if command -v sha256sum >/dev/null 2>&1; then
         file_hash=$(sha256sum "$file" 2>/dev/null | awk '{print $1}')
     elif command -v shasum >/dev/null 2>&1; then
@@ -768,10 +893,14 @@ is_file_processed() {
     timestamp=$(date +"%Y-%m-%d %H:%M:%S")
     size=$(du -h "$file" 2>/dev/null | cut -f1 || echo "unknown")
 
-    if ! echo "$timestamp | $file_hash | $operation | $size | $file_type | $abs_path" >> "$processing_log" 2>/dev/null; then
-        echo "Warning: Failed to write to processing log" >&2
+    # Only log if not in dry run mode
+    if [ "$dry_run" != "true" ]; then
+        if ! echo "$timestamp | $file_hash | $operation | $size | $file_type | $abs_path" >> "$processing_log" 2>/dev/null; then
+            echo "Warning: Failed to write to processing log" >&2
+        fi
     fi
 
+    # Update counters
     files_processed=$((files_processed + 1))
 
     if command -v stat >/dev/null 2>&1; then
@@ -779,6 +908,7 @@ is_file_processed() {
         bytes_processed=$((bytes_processed + file_size_bytes))
     fi
 
+    # Update type-specific counters
     case "$file_type" in
         mp4)
             mp4_files_processed=$((mp4_files_processed + 1))
@@ -786,6 +916,10 @@ is_file_processed() {
             ;;
         mkv)
             mkv_files_processed=$((mkv_files_processed + 1))
+            video_files_processed=$((video_files_processed + 1))
+            ;;
+        m4v)
+            mp4_files_processed=$((mp4_files_processed + 1))
             video_files_processed=$((video_files_processed + 1))
             ;;
         mp3)
@@ -802,7 +936,7 @@ is_file_processed() {
         aac|ogg|wav|m4a|iff|8svx|m3v|aud|wma|opus|amr|aiff|au|ra|dts|ac3|mka|oga)
             audio_files_processed=$((audio_files_processed + 1))
             ;;
-        avi|mpg|mpeg|flv|mov|m4v|webm|3gp|wmv|asf|rm|rmvb|ts|mts|m2ts|vob|ogv)
+        avi|mpg|mpeg|flv|mov|webm|3gp|wmv|asf|rm|rmvb|ts|mts|m2ts|vob|ogv)
             video_files_processed=$((video_files_processed + 1))
             ;;
         *)
@@ -811,11 +945,249 @@ is_file_processed() {
     esac
 
     if [ "$verbose" = "true" ]; then
-        echo "DEBUG: Logged file: '$file' (type: $file_type, total processed: $files_processed)"
+        echo "DEBUG: Logged file: '$file' (type: $file_type, total processed: $files_processed)" >&2
     fi
 
     # Rotate log if needed
     rotate_logs "$processing_log"
+}
+
+strip_metadata() {
+    local file="$1"
+    local backup_dir="${2:-./backups}"
+    local file_type new_name temp_file
+
+    if is_file_processed "$file"; then
+        echo "Skipping already processed file: '$file'"
+        files_skipped=$((files_skipped + 1))
+        return 0
+    fi
+
+    echo "Processing video: '$file'"
+
+    if [ "$dry_run" = "true" ]; then
+        echo "[DRY RUN] Would strip metadata from: '$file'"
+        return 0
+    fi
+
+    if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+        handle_error 10 "File not found or not readable" "video_processing" "$file" "${LINENO}"
+        return 1
+    fi
+
+    # Clean filename and get the result
+    local cleaned_file
+    cleaned_file=$(clean_filename "$file")
+    local clean_result=$?
+
+    if [ $clean_result -ne 0 ] || [ -z "$cleaned_file" ]; then
+        echo "Warning: Failed to clean filename for '$file', using original"
+        cleaned_file="$file"
+    fi
+
+    file="$cleaned_file"
+
+    if [ ! -f "$file" ]; then
+        echo "Error: File not found after filename cleaning: '$file'"
+        return 1
+    fi
+
+    if ! backup_file "$file" "$backup_dir"; then
+        echo "Backup failed, skipping file for safety: '$file'"
+        return 1
+    fi
+
+    remove_assoc_metadata_files "$file"
+
+    # Enhanced format detection
+    local actual_format=""
+    local file_ext="${file##*.}"
+    file_ext=$(echo "$file_ext" | tr '[:upper:]' '[:lower:]')
+
+    if command -v ffprobe >/dev/null 2>&1; then
+        actual_format=$(ffprobe -v quiet -show_format -print_format json "$file" 2>/dev/null | grep -o '"format_name":"[^"]*"' | cut -d'"' -f4 | head -1)
+    fi
+
+    if [ -z "$actual_format" ] && command -v ffmpeg >/dev/null 2>&1; then
+        actual_format=$(ffmpeg -i "$file" 2>&1 | grep "Input #0" | sed -n 's/.*Input #0, \([^,]*\),.*/\1/p' | head -1)
+    fi
+
+    if [ -z "$actual_format" ]; then
+        actual_format="$file_ext"
+    fi
+
+    file_type="$file_ext"
+    echo "File extension: $file_type, Actual format: $actual_format"
+
+    local success=false
+    local method_used=""
+    local processed_file="$file"
+
+    # NEW: Check if hardware encoding is enabled - use it for ALL video processing
+    if [ "$use_hardware_encoding" = "true" ] && [[ "$file_type" =~ ^(mp4|mkv|avi|mov|m4v|webm|flv|mpg|mpeg)$ ]]; then
+        echo "🚀 Hardware encoding enabled - processing with hardware acceleration"
+        method_used="hardware_encoding"
+
+        local temp_hw_file="${file%.*}_hw_processed.${file##*.}"
+
+        if encode_video_hardware "$file" "$temp_hw_file" "$hardware_encoder_type" "$hardware_quality"; then
+            if mv "$temp_hw_file" "$file" 2>/dev/null; then
+                echo "✅ Hardware processed and metadata stripped: '$file'"
+                echo "   Encoder: ${hardware_encoders[$hardware_encoder_type]} ($hardware_encoder_type)"
+                echo "   Quality: $hardware_quality"
+                success=true
+            else
+                echo "❌ Failed to replace original with hardware processed file"
+                rm -f "$temp_hw_file" 2>/dev/null
+            fi
+        else
+            echo "⚠️ Hardware encoding failed, falling back to standard processing..."
+            rm -f "$temp_hw_file" 2>/dev/null
+        fi
+    fi
+
+    # Standard processing if hardware encoding wasn't used or failed
+    if [ "$success" = false ]; then
+        if [[ "$actual_format" =~ matroska|mkv ]] || [ "$file_type" = "mkv" ]; then
+            echo "Processing as MKV file (actual format: ${actual_format:-mkv})"
+            method_used="mkvpropedit"
+
+            if command -v mkvpropedit >/dev/null 2>&1; then
+                if mkvpropedit "$file" --delete title 2>/dev/null; then
+                    echo "✅ Processed MKV with mkvpropedit: '$file'"
+                    success=true
+                else
+                    echo "mkvpropedit failed, trying ffmpeg..."
+                fi
+            fi
+
+            if [ "$success" = false ]; then
+                method_used="ffmpeg"
+                temp_file="${file%.*}_stripped.mkv"
+                if ffmpeg -y -nostdin -i "$file" -c copy -map_metadata -1 "$temp_file" 2>/dev/null; then
+                    if mv "$temp_file" "$file" 2>/dev/null; then
+                        echo "✅ Processed MKV with ffmpeg: '$file'"
+                        success=true
+                    fi
+                fi
+                rm -f "$temp_file" 2>/dev/null
+            fi
+
+        elif [[ "$file_type" =~ ^(mp4|m4v|mov)$ ]] || [[ "$actual_format" =~ mp4|mov|ipod ]]; then
+            echo "Processing as MP4/M4V file"
+
+            if [[ "$actual_format" =~ mp4|mov|ipod ]] && command -v exiftool >/dev/null 2>&1; then
+                method_used="exiftool"
+                if exiftool -overwrite_original -All= "$file" 2>/dev/null; then
+                    echo "✅ Processed MP4/M4V with exiftool: '$file'"
+                    success=true
+                else
+                    echo "exiftool failed, trying ffmpeg..."
+                fi
+            fi
+
+            if [ "$success" = false ]; then
+                method_used="ffmpeg"
+                temp_file="${file%.*}_stripped.${file##*.}"
+                if ffmpeg -y -nostdin -i "$file" -c copy -map_metadata -1 "$temp_file" 2>/dev/null; then
+                    if mv "$temp_file" "$file" 2>/dev/null; then
+                        echo "✅ Processed with ffmpeg: '$file'"
+                        success=true
+                    fi
+                fi
+                rm -f "$temp_file" 2>/dev/null
+            fi
+
+        else
+            echo "Processing generic video file"
+            method_used="ffmpeg"
+            temp_file="${file%.*}_stripped.${file##*.}"
+            if ffmpeg -y -nostdin -i "$file" -c copy -map_metadata -1 "$temp_file" 2>/dev/null; then
+                if mv "$temp_file" "$file" 2>/dev/null; then
+                    echo "✅ Processed with ffmpeg: '$file'"
+                    success=true
+                fi
+            fi
+            rm -f "$temp_file" 2>/dev/null
+        fi
+    fi
+
+    # Rename after processing (if requested and successful)
+    if [ "$success" = "true" ] && [ "$renameext" = "true" ]; then
+        local current_ext="${file##*.}"
+        if [ "$current_ext" != "$newfileext" ]; then
+            new_name="${file%.*}.$newfileext"
+            if mv "$file" "$new_name" 2>/dev/null; then
+                processed_file="$new_name"
+                echo "Renamed after processing: '$file' -> '$new_name'"
+            else
+                echo "Warning: Failed to rename after processing: '$file'"
+                processed_file="$file"
+            fi
+        else
+            processed_file="$file"
+        fi
+    else
+        processed_file="$file"
+    fi
+
+    if [ "$success" = "true" ]; then
+        echo "Success using method: $method_used"
+        log_processed_file "$processed_file" "processed" "$file_type"
+        return 0
+    else
+        echo "All methods failed for: '$file'"
+        handle_error 11 "All video processing methods failed" "video_processing" "$file" "${LINENO}"
+        return 1
+    fi
+}
+
+detect_actual_format() {
+    local file="$1"
+    local format=""
+
+    # Try ffprobe first (most reliable and detailed)
+    if command -v ffprobe >/dev/null 2>&1; then
+        # Get format name
+        format=$(ffprobe -v quiet -show_format -select_streams v:0 -print_format csv=p=0 "$file" 2>/dev/null | cut -d',' -f1)
+        if [ -n "$format" ] && [ "$format" != "N/A" ]; then
+            echo "$format"
+            return 0
+        fi
+
+        # Alternative ffprobe method
+        format=$(ffprobe -v quiet -show_format -print_format json "$file" 2>/dev/null | grep -o '"format_name":"[^"]*"' | cut -d'"' -f4)
+        if [ -n "$format" ]; then
+            echo "$format"
+            return 0
+        fi
+    fi
+
+    # Fallback to ffmpeg
+    if command -v ffmpeg >/dev/null 2>&1; then
+        format=$(ffmpeg -i "$file" 2>&1 | grep "Input #0" | sed -n 's/.*Input #0, \([^,]*\),.*/\1/p')
+        if [ -n "$format" ]; then
+            echo "$format"
+            return 0
+        fi
+    fi
+
+    # Last resort - file command with mime type
+    if command -v file >/dev/null 2>&1; then
+        local mime_type=$(file -b --mime-type "$file" 2>/dev/null)
+        case "$mime_type" in
+            video/x-matroska) echo "matroska" ;;
+            video/mp4) echo "mp4" ;;
+            video/quicktime) echo "mov" ;;
+            video/x-msvideo) echo "avi" ;;
+            video/*) echo "video" ;;
+            *) echo "unknown" ;;
+        esac
+        return 0
+    fi
+
+    echo "unknown"
+    return 1
 }
 
 detect_file_type() {
@@ -847,75 +1219,6 @@ detect_file_type() {
     fi
 
     echo "$ext"
-}
-
-process_image() {
-    local file="$1"
-    local backup_dir="${2:-./backups}"
-    local file_type="$3"
-
-    if is_file_processed "$file"; then
-        echo "Skipping already processed image: '$file'"
-        files_skipped=$((files_skipped + 1))
-        return 0
-    fi
-
-    local original_file="$file"
-    file=$(clean_filename "$file")
-
-    echo "Processing image: '$file'"
-
-    if [ "$dry_run" = "true" ]; then
-        echo "[DRY RUN] Would process image: '$file'"
-        return 0
-    fi
-
-    if [ ! -f "$file" ] || [ ! -r "$file" ]; then
-        handle_error 4 "File not found or not readable" "image_processing" "$file" "${LINENO}"
-        return 1
-    fi
-
-    if ! backup_file "$file" "$backup_dir"; then
-        echo "Backup failed, skipping file for safety: '$file'"
-        return 1
-    fi
-
-    local success=false
-
-    if command -v exiftool >/dev/null 2>&1; then
-        if exiftool -overwrite_original -all= -tagsfromfile @ -orientation -colorspace "$file" 2>/dev/null; then
-            echo "✅ Removed metadata with exiftool: '$file'"
-            success=true
-        fi
-    fi
-
-    if [ "$success" = false ] && command -v convert >/dev/null 2>&1; then
-        local temp_file="${file%.*}_temp.${file##*.}"
-        if convert "$file" -strip "$temp_file" 2>/dev/null && mv "$temp_file" "$file" 2>/dev/null; then
-            echo "✅ Removed metadata with ImageMagick: '$file'"
-            success=true
-        else
-            rm -f "$temp_file" 2>/dev/null
-        fi
-    fi
-
-    # Image optimization if requested
-    if [ "$success" = true ] && [ "$optimize_images" = true ] && command -v convert >/dev/null 2>&1; then
-        optimize_image "$file" "$file_type"
-    fi
-
-    # Image conversion if requested
-    if [ "$success" = true ] && [ "$convert_images" = true ] && [ "$file_type" != "$image_output_format" ]; then
-        convert_image "$file" "$image_output_format"
-    fi
-
-    if [ "$success" = true ]; then
-        log_processed_file "$file" "processed" "$file_type"
-        return 0
-    else
-        handle_error 5 "All image processing methods failed" "image_processing" "$file" "${LINENO}"
-        return 1
-    fi
 }
 
 optimize_image() {
@@ -1244,30 +1547,132 @@ process_m3u() {
     fi
 }
 
-# MODIFIED: Enhanced strip_metadata function with hardware encoding
-strip_metadata() {
+clean_filename() {
+    local file="$1"
+    local dir filename extension name new_filename new_path
+    local changed=false
+
+    if [ ! -f "$file" ]; then
+        echo "Error: File does not exist: $file" >&2
+        return 1
+    fi
+
+    # DEBUG OUTPUT MUST GO TO STDERR, NOT STDOUT!
+    if [ "$verbose" = "true" ]; then
+        echo "DEBUG: clean_filename input: '$file'" >&2
+    fi
+
+    # If no filename cleaning options are enabled, just return the original file
+    if [ "$clean_filenames" != "true" ] && [ "$replace_underscores" != "true" ] && [ "$capitalize_filenames" != "true" ]; then
+        if [ "$verbose" = "true" ]; then
+            echo "DEBUG: No filename cleaning enabled, returning: '$file'" >&2
+        fi
+        echo "$file"  # THIS IS THE ONLY STDOUT OUTPUT
+        return 0
+    fi
+
+    dir=$(dirname "$file")
+    filename=$(basename "$file")
+    extension="${filename##*.}"
+    name="${filename%.*}"
+    new_filename="$name"
+
+    # Clean filename operations
+    if [ "$clean_filenames" = true ]; then
+        new_filename=$(echo "$new_filename" | sed 's/\./ /g')
+        changed=true
+    fi
+
+    if [ "$replace_underscores" = true ]; then
+        new_filename=$(echo "$new_filename" | sed 's/_/ /g')
+        changed=true
+    fi
+
+    if [ "$capitalize_filenames" = true ]; then
+        new_filename=$(echo "$new_filename" | awk '{for(i=1;i<=NF;i++){ $i=toupper(substr($i,1,1)) tolower(substr($i,2)) }}1')
+        changed=true
+    fi
+
+    # Handle special characters more safely
+    new_filename=$(echo "$new_filename" | sed 's/[^[:alnum:][:space:]._-]/_/g')
+
+    # Remove multiple spaces and trim
+    new_filename=$(echo "$new_filename" | sed 's/  */ /g' | sed 's/^ *//;s/ *$//')
+
+    # Add extension back
+    new_filename="$new_filename.$extension"
+    new_path="$dir/$new_filename"
+
+    if [ "$changed" = true ] && [ "$filename" != "$new_filename" ]; then
+        if [ "$dry_run" = "true" ]; then
+            echo "[DRY RUN] Would rename: '$file' -> '$new_path'" >&2
+            echo "$file"  # Return original in dry run
+            return 0
+        else
+            # Check if target exists
+            if [ -e "$new_path" ] && [ "$new_path" != "$file" ]; then
+                echo "Warning: Target filename already exists: '$new_path'" >&2
+                echo "Skipping rename to avoid overwrite" >&2
+                echo "$file"  # Return original
+                return 0
+            fi
+
+            if mv "$file" "$new_path" 2>/dev/null; then
+                echo "Renamed: '$file' -> '$new_path'" >&2
+                echo "$new_path"  # Return new path
+                return 0
+            else
+                echo "Failed to rename: '$file'" >&2
+                echo "$file"  # Return original
+                return 1
+            fi
+        fi
+    fi
+
+    # No changes needed, return original file
+    echo "$file"  # THIS IS THE ONLY STDOUT OUTPUT
+    return 0
+}
+
+process_image() {
     local file="$1"
     local backup_dir="${2:-./backups}"
-    local file_type new_name temp_file
+    local file_type="$3"
 
     if is_file_processed "$file"; then
-        echo "Skipping already processed file: '$file'"
+        echo "Skipping already processed image: '$file'"
         files_skipped=$((files_skipped + 1))
         return 0
     fi
 
-    local original_file="$file"
-    file=$(clean_filename "$file")
-
-    echo "Processing video: '$file'"
+    echo "Processing image: '$file'"
 
     if [ "$dry_run" = "true" ]; then
-        echo "[DRY RUN] Would strip metadata from: '$file'"
+        echo "[DRY RUN] Would process image: '$file'"
         return 0
     fi
 
     if [ ! -f "$file" ] || [ ! -r "$file" ]; then
-        handle_error 10 "File not found or not readable" "video_processing" "$file" "${LINENO}"
+        handle_error 4 "File not found or not readable" "image_processing" "$file" "${LINENO}"
+        return 1
+    fi
+
+    # Clean filename and get the result - CAPTURE PROPERLY
+    local cleaned_file
+    cleaned_file=$(clean_filename "$file")
+    local clean_result=$?
+
+    if [ $clean_result -ne 0 ] || [ -z "$cleaned_file" ]; then
+        echo "Warning: Failed to clean filename for '$file', using original"
+        cleaned_file="$file"
+    fi
+
+    # Use the cleaned filename for processing
+    file="$cleaned_file"
+
+    # Verify the file exists after cleaning
+    if [ ! -f "$file" ]; then
+        echo "Error: File not found after filename cleaning: '$file'"
         return 1
     fi
 
@@ -1276,84 +1681,105 @@ strip_metadata() {
         return 1
     fi
 
-    remove_assoc_metadata_files "$file"
-
-    file_type=$(detect_file_type "$file")
-
-    if [ "$renameext" = "true" ]; then
-        new_name="${file%.*}.$newfileext"
-        if mv "$file" "$new_name" 2>/dev/null; then
-            file="$new_name"
-            echo "Renamed to: '$file'"
-        fi
-    fi
-
     local success=false
 
-    # NEW: Check if hardware encoding is enabled and suitable for this file
-    if [ "$use_hardware_encoding" = "true" ] && [[ "$file_type" =~ ^(mp4|mkv|avi|mov|m4v)$ ]]; then
-        echo "🚀 Using hardware encoding for: '$file'"
-        local output_file="$file"
-        local temp_encoded="${file%.*}_hwencoded.${file##*.}"
-        
-        if encode_video_hardware "$file" "$temp_encoded" "$hardware_encoder_type" "$hardware_quality"; then
-            if mv "$temp_encoded" "$output_file" 2>/dev/null; then
-                echo "✅ Hardware encoded and metadata stripped: '$file'"
-                success=true
-            fi
-        else
-            echo "⚠️  Hardware encoding failed, trying standard metadata removal..."
-            rm -f "$temp_encoded" 2>/dev/null
+    if command -v exiftool >/dev/null 2>&1; then
+        if exiftool -overwrite_original -all= -tagsfromfile @ -orientation -colorspace "$file" 2>/dev/null; then
+            echo "✅ Removed metadata with exiftool: '$file'"
+            success=true
         fi
     fi
 
-    # Original metadata removal logic if hardware encoding wasn't used or failed
-    if [ "$success" = "false" ]; then
-        case "$file_type" in
-            mpg|mpeg|mp4|m4v|flv|mov)
-                if command -v exiftool >/dev/null 2>&1; then
-                    if exiftool -overwrite_original -All= "$file" 2>/dev/null; then
-                        echo "✅ Processed with exiftool: '$file'"
-                        success=true
-                    fi
-                fi
-                ;;
-            avi)
-                temp_file="${file%.*}_stripped.avi"
-                if ffmpeg -y -nostdin -i "$file" -codec copy -map_metadata -1 "$temp_file" 2>/dev/null; then
-                    if mv "$temp_file" "$file" 2>/dev/null; then
-                        echo "✅ Processed AVI with ffmpeg: '$file'"
-                        success=true
-                    fi
-                fi
-                rm -f "$temp_file" 2>/dev/null
-                ;;
-            mkv)
-                if process_mkv "$file" "$backup_dir"; then
-                    success=true
-                fi
-                ;;
-            *)
-                # Try generic ffmpeg approach
-                temp_file="${file%.*}_stripped.${file##*.}"
-                if ffmpeg -y -nostdin -i "$file" -c copy -map_metadata -1 "$temp_file" 2>/dev/null; then
-                    if mv "$temp_file" "$file" 2>/dev/null; then
-                        echo "✅ Processed with ffmpeg: '$file'"
-                        success=true
-                    fi
-                fi
-                rm -f "$temp_file" 2>/dev/null
-                ;;
-        esac
+    if [ "$success" = false ] && command -v convert >/dev/null 2>&1; then
+        local temp_file="${file%.*}_temp.${file##*.}"
+        if convert "$file" -strip "$temp_file" 2>/dev/null && mv "$temp_file" "$file" 2>/dev/null; then
+            echo "✅ Removed metadata with ImageMagick: '$file'"
+            success=true
+        else
+            rm -f "$temp_file" 2>/dev/null
+        fi
     fi
 
-    if [ "$success" = "true" ]; then
+    # Image optimization if requested
+    if [ "$success" = true ] && [ "$optimize_images" = true ] && command -v convert >/dev/null 2>&1; then
+        optimize_image "$file" "$file_type"
+    fi
+
+    # Image conversion if requested
+    if [ "$success" = true ] && [ "$convert_images" = true ] && [ "$file_type" != "$image_output_format" ]; then
+        convert_image "$file" "$image_output_format"
+    fi
+
+    if [ "$success" = true ]; then
         log_processed_file "$file" "processed" "$file_type"
         return 0
     else
-        handle_error 11 "All video processing methods failed" "video_processing" "$file" "${LINENO}"
+        handle_error 5 "All image processing methods failed" "image_processing" "$file" "${LINENO}"
         return 1
     fi
+}
+
+test_video_tools() {
+    local file="$1"
+
+    echo "🔍 Testing tools for file: '$file'"
+
+    # Test file access
+    echo "File exists: $([ -f "$file" ] && echo "YES" || echo "NO")"
+    echo "File readable: $([ -r "$file" ] && echo "YES" || echo "NO")"
+    echo "File size: $(du -h "$file" 2>/dev/null | cut -f1 || echo "unknown")"
+
+    # Test exiftool
+    if command -v exiftool >/dev/null 2>&1; then
+        echo "✅ exiftool found"
+        echo "Exiftool test (dry run):"
+        exiftool -All= -echo1 -echo2 "$file" 2>&1 | head -5
+    else
+        echo "❌ exiftool not found"
+    fi
+
+    # Test ffmpeg
+    if command -v ffmpeg >/dev/null 2>&1; then
+        echo "✅ ffmpeg found"
+        echo "FFmpeg file info:"
+        ffmpeg -i "$file" 2>&1 | grep -E "(Input|Duration|Stream)" | head -5
+    else
+        echo "❌ ffmpeg not found"
+    fi
+
+    # Test file type detection
+    if command -v file >/dev/null 2>&1; then
+        echo "File type: $(file "$file")"
+    fi
+}
+
+simple_strip_metadata() {
+    local file="$1"
+
+    echo "🔧 Simple metadata removal for: '$file'"
+
+    # Just try exiftool with minimal options
+    if command -v exiftool >/dev/null 2>&1; then
+        if exiftool -overwrite_original -All= "$file"; then
+            echo "✅ Simple exiftool succeeded"
+            return 0
+        fi
+    fi
+
+    # Try very basic ffmpeg
+    local temp_file="${file%.*}_temp.${file##*.}"
+    if command -v ffmpeg >/dev/null 2>&1; then
+        if ffmpeg -y -i "$file" -c copy "$temp_file" 2>/dev/null; then
+            if mv "$temp_file" "$file" 2>/dev/null; then
+                echo "✅ Simple ffmpeg succeeded"
+                return 0
+            fi
+        fi
+        rm -f "$temp_file" 2>/dev/null
+    fi
+
+    echo "❌ Simple methods failed"
+    return 1
 }
 
 process_mkv() {
@@ -1487,6 +1913,30 @@ convert_with_handbrake_settings() {
         else
             echo "⚠️  Hardware HandBrake conversion failed, trying software..."
         fi
+    fi
+
+    echo -e "\n⚙️ == Hardware Encoding Behavior =="
+    if [ "$use_hardware_encoding" = "true" ]; then
+        echo "Hardware encoding is enabled with:"
+        echo "  Encoder: ${hardware_encoders[$hardware_encoder_type]} ($hardware_encoder_type)"
+        echo "  Quality: $hardware_quality"
+        [ "$enable_hardware_decode" = "true" ] && echo "  Hardware decoding: Enabled"
+        echo ""
+        echo "⚠️  Hardware encoding will re-encode videos (longer processing, better compression)"
+        echo "📝 Standard mode just removes metadata tags (faster, preserves original quality)"
+        echo ""
+        read -p "🎯 Use hardware encoding for ALL video processing? [y/N]: " hw_all_response
+        if [[ "$hw_all_response" =~ ^[Yy]$ ]]; then
+            use_hardware_for_all=true
+            echo "✅ Hardware encoding will be used for all video files"
+            echo "   Videos will be re-encoded with hardware acceleration"
+        else
+            use_hardware_for_all=false
+            echo "ℹ️  Hardware encoding will only be used for format conversions"
+            echo "   Standard metadata removal tools will be used for regular processing"
+        fi
+    else
+        use_hardware_for_all=false
     fi
 
     # Original software HandBrake-style conversion
@@ -1857,8 +2307,21 @@ PERFORMANCE:
     --parallel                      Enable parallel processing (experimental)
     --max-jobs N                    Max parallel jobs (default: 4)
 
-LOGGING:
-    --reset-log                     Clear the processing log file
+PROCESSING CONTROL OPTIONS:
+    --force-reprocess, --force      Reprocess all files regardless of processing log
+    --ignore-log                    Ignore processing log completely
+    --clear-log                     Clear processing logs and continue
+    --reset-log                     Clear processing logs and exit
+
+EXAMPLES WITH OVERRIDE OPTIONS:
+    # Force reprocess all files even if previously processed
+    ./stripmeta-hw.sh --force-reprocess --recursive /media/folder
+
+    # Clear logs and start fresh
+    ./stripmeta-hw.sh --clear-log --recursive
+
+    # Ignore existing log completely
+    ./stripmeta-hw.sh --ignore-log /path/to/files
 
 EXAMPLES WITH HARDWARE ENCODING:
     # Enable hardware encoding with auto-detection
@@ -1964,7 +2427,7 @@ METADATA REMOVAL:
 EOF
 }
 
-# MODIFIED: Enhanced interactive mode with hardware encoding options
+
 run_interactive_mode() {
     echo -e "🎬 StripMeta File Processor (X-Seti) v$SCRIPT_VERSION\n"
     echo -e "🚀 NEW: Hardware encoding support added!\n"
@@ -2002,6 +2465,33 @@ run_interactive_mode() {
             echo "🔧 Continuing with interactive setup..."
         fi
     fi
+
+
+    echo -e "\n⚙️ == Hardware Encoding Behavior =="
+    if [ "$use_hardware_encoding" = "true" ]; then
+        echo "Hardware encoding is enabled with:"
+        echo "  Encoder: ${hardware_encoders[$hardware_encoder_type]} ($hardware_encoder_type)"
+        echo "  Quality: $hardware_quality"
+        [ "$enable_hardware_decode" = "true" ] && echo "  Hardware decoding: Enabled"
+        echo ""
+        echo "⚠️  Hardware encoding will re-encode videos (longer processing, better compression)"
+        echo "📝 Standard mode just removes metadata tags (faster, preserves original quality)"
+        echo ""
+        read -p "🎯 Use hardware encoding for ALL video processing? [y/N]: " hw_all_response
+        if [[ "$hw_all_response" =~ ^[Yy]$ ]]; then
+            use_hardware_for_all=true
+            echo "✅ Hardware encoding will be used for all video files"
+            echo "   Videos will be re-encoded with hardware acceleration"
+        else
+            use_hardware_for_all=false
+            echo "ℹ️  Hardware encoding will only be used for format conversions"
+            echo "   Standard metadata removal tools will be used for regular processing"
+        fi
+    else
+        use_hardware_for_all=false
+    fi
+
+    echo -e "\n📁 == Filename Handling Options =="
 
     # Reset all variables to false to avoid confusion from previous runs or defaults
     clean_filenames=false
@@ -2640,16 +3130,39 @@ main() {
                 convert_to_mp4=true
                 shift
                 ;;
+            --force-reprocess|--force)
+                force_reprocess=true
+                echo "🔄 Force reprocess mode enabled - will reprocess all files regardless of log"
+                shift
+                ;;
+            --ignore-log)
+                ignore_processed_log=true
+                echo "📝 Ignore processing log mode enabled"
+                shift
+                ;;
+            --clear-log)
+                rm -f "$processing_log" "${processing_log%.log}_errors.log"
+                echo "🗑️ Processing logs cleared"
+                shift
+                ;;
             --handbrake)
                 use_handbrake_settings=true
                 shift
                 ;;
             --audio-format)
-                if [[ -n "$2" && "$2" =~ ^(mp3|flac|ogg|wav|aac|m4a|wma|opus)$ ]]; then
-                    audio_output_format="$2"
-                    shift 2
+                if [ -n "$2" ]; then
+                    case "$2" in
+                        mp3|flac|ogg|wav|aac|m4a|wma|opus)
+                            audio_output_format="$2"
+                            shift 2
+                            ;;
+                        *)
+                            echo "Error: Invalid audio format. Supported: mp3, flac, ogg, wav, aac, m4a, wma, opus"
+                            exit 1
+                            ;;
+                    esac
                 else
-                    echo "Error: Invalid audio format. Supported: mp3, flac, ogg, wav, aac, m4a, wma, opus"
+                    echo "Error: --audio-format requires a format argument"
                     exit 1
                 fi
                 ;;
@@ -2784,7 +3297,6 @@ main() {
 main "$@"
 
 
-#logging with better error handling
 log_processed_file() {
     local file="$1"
     local operation="${2:-processed}"
@@ -2816,8 +3328,11 @@ log_processed_file() {
     timestamp=$(date +"%Y-%m-%d %H:%M:%S")
     size=$(du -h "$file" 2>/dev/null | cut -f1 || echo "unknown")
 
-    if ! echo "$timestamp | $file_hash | $operation | $size | $file_type | $abs_path" >> "$processing_log" 2>/dev/null; then
-        echo "Warning: Failed to write to processing log" >&2
+    # Only log if not in dry run mode
+    if [ "$dry_run" != "true" ]; then
+        if ! echo "$timestamp | $file_hash | $operation | $size | $file_type | $abs_path" >> "$processing_log" 2>/dev/null; then
+            echo "Warning: Failed to write to processing log" >&2
+        fi
     fi
 
     files_processed=$((files_processed + 1))
@@ -2827,6 +3342,7 @@ log_processed_file() {
         bytes_processed=$((bytes_processed + file_size_bytes))
     fi
 
+    # Update counters
     case "$file_type" in
         mp4)
             mp4_files_processed=$((mp4_files_processed + 1))
@@ -2865,3 +3381,4 @@ log_processed_file() {
     # Rotate log if needed
     rotate_logs "$processing_log"
 }
+
