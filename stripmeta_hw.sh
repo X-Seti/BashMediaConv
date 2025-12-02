@@ -187,170 +187,6 @@ detect_hardware_encoders() {
 }
 
 
-encode_video_hardware() {
-    local input_file="$1"
-    local output_file="$2"
-    local encoder="${3:-$hardware_encoder_type}"
-    local quality="${4:-$hardware_quality}"
-    local temp_file="${output_file%.*}_hwenc_temp.${output_file##*.}"
-
-    echo "🔧 Hardware encoding: $input_file -> $output_file"
-    echo "   Encoder: ${hardware_encoders[$encoder]} ($encoder)"
-    echo "   Quality: $quality (lower = better quality)"
-
-    # Show input file info
-    local input_size=$(du -h "$input_file" 2>/dev/null | cut -f1 || echo "unknown")
-    echo "   Input size: $input_size"
-
-    if [ "$dry_run" = "true" ]; then
-        echo "[DRY RUN] Would hardware encode: '$input_file' with $encoder"
-        return 0
-    fi
-
-    # Build ffmpeg command with hardware acceleration
-    local ffmpeg_cmd=(
-        "ffmpeg" "-y" "-nostdin"
-    )
-
-    # Add hardware decoding if enabled and available
-    if [ "$enable_hardware_decode" = "true" ]; then
-        ffmpeg_cmd+=("-hwaccel" "auto")
-        echo "   Hardware decoding: Enabled"
-    fi
-
-    ffmpeg_cmd+=(
-        "-i" "$input_file"
-        "-c:v" "$encoder"
-    )
-
-    # Set quality parameters based on encoder type
-    case "$encoder" in
-        *_rkmpp|*_v4l2m2m)
-            ffmpeg_cmd+=("-crf" "$quality")
-            ;;
-        *_vaapi)
-            ffmpeg_cmd+=("-qp" "$quality")
-            ;;
-        *_nvenc)
-            ffmpeg_cmd+=("-crf" "$quality" "-preset" "fast")
-            ;;
-        *_qsv)
-            ffmpeg_cmd+=("-global_quality" "$quality")
-            ;;
-        libx264|libx265)
-            ffmpeg_cmd+=("-crf" "$quality" "-preset" "fast")
-            ;;
-    esac
-
-    # Add audio and metadata options
-    ffmpeg_cmd+=(
-        "-c:a" "aac"
-        "-b:a" "192k"
-        "-map_metadata" "-1"
-        "-movflags" "+faststart"
-        # ADD PROGRESS REPORTING
-        "-progress" "pipe:1"
-        "$temp_file"
-    )
-
-    # Execute encoding with progress monitoring
-    echo "⚡ Starting hardware encoding..."
-    echo "💭 This may take a while for large files..."
-
-    local start_time=$(date +%s)
-
-    # Show the actual command being run (for debugging)
-    if [ "$verbose" = "true" ]; then
-        echo "DEBUG: Running command: ${ffmpeg_cmd[*]}" >&2
-    fi
-
-    # Run ffmpeg with progress monitoring
-    if "${ffmpeg_cmd[@]}" 2>&1 | while IFS= read -r line; do
-        case "$line" in
-            frame=*)
-                # Extract frame number and show progress
-                local frame=$(echo "$line" | sed 's/frame=//')
-                printf "\r🎬 Processing frame: %s" "$frame"
-                ;;
-            fps=*)
-                # Extract FPS
-                local fps=$(echo "$line" | sed 's/fps=//')
-                printf " | FPS: %s" "$fps"
-                ;;
-            bitrate=*)
-                # Extract bitrate
-                local bitrate=$(echo "$line" | sed 's/bitrate=//')
-                printf " | Bitrate: %s" "$bitrate"
-                ;;
-            speed=*)
-                # Extract speed
-                local speed=$(echo "$line" | sed 's/speed=//')
-                printf " | Speed: %s" "$speed"
-                ;;
-            *"error"*|*"Error"*|*"ERROR"*)
-                echo -e "\n❌ Error during encoding: $line" >&2
-                ;;
-            *"Conversion failed"*|*"Invalid"*|*"No such file"*)
-                echo -e "\n❌ Encoding failed: $line" >&2
-                ;;
-        esac
-    done; then
-        local end_time=$(date +%s)
-        local duration=$((end_time - start_time))
-
-        echo -e "\n⏱️  Encoding completed in ${duration}s"
-
-        # Get file sizes for comparison
-        local output_size=$(du -h "$temp_file" 2>/dev/null | cut -f1 || echo "unknown")
-
-        # Verify output file was created and has content
-        if [ -f "$temp_file" ] && [ -s "$temp_file" ]; then
-            if mv "$temp_file" "$output_file" 2>/dev/null; then
-                echo "✅ Hardware encoding completed successfully"
-                echo "   Input: $input_size → Output: $output_size"
-
-                # Calculate compression ratio
-                if command -v stat >/dev/null 2>&1; then
-                    local input_bytes=$(stat -c%s "$input_file" 2>/dev/null || echo "0")
-                    local output_bytes=$(stat -c%s "$output_file" 2>/dev/null || echo "0")
-                    if [ "$input_bytes" -gt 0 ] && [ "$output_bytes" -gt 0 ]; then
-                        local ratio=$((input_bytes * 100 / output_bytes))
-                        echo "   Compression: ${ratio}% of original size"
-                    fi
-                fi
-
-                return 0
-            else
-                echo "❌ Failed to move encoded file to final location"
-                rm -f "$temp_file" 2>/dev/null
-                return 1
-            fi
-        else
-            echo "❌ Output file was not created or is empty"
-            rm -f "$temp_file" 2>/dev/null
-            return 1
-        fi
-    else
-        echo -e "\n❌ Hardware encoding failed with $encoder"
-        rm -f "$temp_file" 2>/dev/null
-
-        # Try to diagnose the issue
-        echo "🔍 Diagnosing hardware encoding failure..."
-
-        # Test if encoder is actually available
-        if ! ffmpeg -hide_banner -f lavfi -i testsrc=duration=1:size=320x240:rate=1 -t 1 -c:v "$encoder" -f null - 2>/dev/null; then
-            echo "❌ Encoder '$encoder' is not working properly"
-            echo "💡 Try running: ./stripmeta_hw.sh --detect-encoders"
-        fi
-
-        # Check input file
-        if ! ffmpeg -i "$input_file" -t 1 -f null - 2>/dev/null; then
-            echo "❌ Input file '$input_file' may be corrupted or unreadable"
-        fi
-
-        return 1
-    fi
-}
 
 test_hardware_encoding_simple() {
     local test_encoder="${1:-$hardware_encoder_type}"
@@ -952,10 +788,188 @@ log_processed_file() {
     rotate_logs "$processing_log"
 }
 
+
+encode_video_hardware() {
+    local input_file="$1"
+    local encoder="${2:-$hardware_encoder_type}"
+    local quality="${3:-$hardware_quality}"
+
+    # Generate output filename with hardware encoding suffix
+    local base_name="${input_file%.*}"
+    local extension="${input_file##*.}"
+    local output_file="${base_name}_hw_encoded.${extension}"
+
+    # If output file already exists, add timestamp to make it unique
+    if [ -f "$output_file" ]; then
+        output_file="${base_name}_hw_encoded_$(date +%Y%m%d_%H%M%S).${extension}"
+    fi
+
+    echo "Hardware encoding: $input_file -> $output_file"
+    echo "   Encoder: ${hardware_encoders[$encoder]} ($encoder)"
+    echo "   Quality: $quality (lower = better quality)"
+
+    # Show input file info
+    local input_size=$(du -h "$input_file" 2>/dev/null | cut -f1 || echo "unknown")
+    echo "   Input size: $input_size"
+
+    if [ "$dry_run" = "true" ]; then
+        echo "[DRY RUN] Would hardware encode: '$input_file' to '$output_file' with $encoder"
+        return 0
+    fi
+
+    # Build ffmpeg command with hardware acceleration
+    local ffmpeg_cmd=(
+        "ffmpeg" "-y" "-nostdin"
+    )
+
+    # Add hardware decoding if enabled and available
+    if [ "$enable_hardware_decode" = "true" ]; then
+        ffmpeg_cmd+=("-hwaccel" "auto")
+        echo "   Hardware decoding: Enabled"
+    fi
+
+    ffmpeg_cmd+=(
+        "-i" "$input_file"
+        "-c:v" "$encoder"
+    )
+
+    # Set quality parameters based on encoder type
+    case "$encoder" in
+        *_rkmpp|*_v4l2m2m)
+            ffmpeg_cmd+=("-crf" "$quality")
+            ;;
+        *_vaapi)
+            ffmpeg_cmd+=("-qp" "$quality")
+            ;;
+        *_nvenc)
+            ffmpeg_cmd+=("-crf" "$quality" "-preset" "fast")
+            ;;
+        *_qsv)
+            ffmpeg_cmd+=("-global_quality" "$quality")
+            ;;
+        libx264|libx265)
+            ffmpeg_cmd+=("-crf" "$quality" "-preset" "fast")
+            ;;
+    esac
+
+    # Add audio and metadata options
+    ffmpeg_cmd+=(
+        "-c:a" "aac"
+        "-b:a" "192k"
+        "-map_metadata" "-1"
+        "-movflags" "+faststart"
+        "-progress" "pipe:1"
+        "$output_file"
+    )
+
+    # Execute encoding with progress monitoring
+    echo "Starting hardware encoding..."
+    echo "This may take a while for large files..."
+
+    local start_time=$(date +%s)
+
+    # Show the actual command being run (for debugging)
+    if [ "$verbose" = "true" ]; then
+        echo "DEBUG: Running command: ${ffmpeg_cmd[*]}" >&2
+    fi
+
+    # Run ffmpeg with progress monitoring
+    if "${ffmpeg_cmd[@]}" 2>&1 | while IFS= read -r line; do
+        case "$line" in
+            frame=*)
+                # Extract frame number and show progress
+                local frame=$(echo "$line" | sed 's/frame=//')
+                printf "\rProcessing frame: %s" "$frame"
+                ;;
+            fps=*)
+                # Extract FPS
+                local fps=$(echo "$line" | sed 's/fps=//')
+                printf " | FPS: %s" "$fps"
+                ;;
+            bitrate=*)
+                # Extract bitrate
+                local bitrate=$(echo "$line" | sed 's/bitrate=//')
+                printf " | Bitrate: %s" "$bitrate"
+                ;;
+            speed=*)
+                # Extract speed
+                local speed=$(echo "$line" | sed 's/speed=//')
+                printf " | Speed: %s" "$speed"
+                ;;
+            *"error"*|*"Error"*|*"ERROR"*)
+                echo -e "\nError during encoding: $line" >&2
+                ;;
+            *"Conversion failed"*|*"Invalid"*|*"No such file"*)
+                echo -e "\nEncoding failed: $line" >&2
+                ;;
+        esac
+    done; then
+        local end_time=$(date +%s)
+        local duration=$((end_time - start_time))
+
+        echo -e "\nEncoding completed in ${duration}s"
+
+        # Get file sizes for comparison
+        local output_size=$(du -h "$output_file" 2>/dev/null | cut -f1 || echo "unknown")
+
+        # Verify output file was created and has content
+        if [ -f "$output_file" ] && [ -s "$output_file" ]; then
+            echo "Hardware encoding completed successfully"
+            echo "   Input: $input_size -> Output: $output_size"
+            echo "   Output file: $output_file"
+
+            # Calculate compression ratio
+            if command -v stat >/dev/null 2>&1; then
+                local input_bytes=$(stat -c%s "$input_file" 2>/dev/null || echo "0")
+                local output_bytes=$(stat -c%s "$output_file" 2>/dev/null || echo "0")
+                if [ "$input_bytes" -gt 0 ] && [ "$output_bytes" -gt 0 ]; then
+                    local ratio=$((output_bytes * 100 / input_bytes))
+                    echo "   Compression: ${ratio}% of original size"
+                fi
+            fi
+
+            # Log the new file as processed
+            log_processed_file "$output_file" "hardware_encoded" "${extension}"
+
+            # Optionally remove original file if backups are disabled
+            if [ "$backups" = "false" ]; then
+                echo "Removing original file (backups disabled): $input_file"
+                rm "$input_file" 2>/dev/null
+            fi
+
+            return 0
+        else
+            echo "Output file was not created or is empty"
+            rm -f "$output_file" 2>/dev/null
+            return 1
+        fi
+    else
+        echo -e "\nHardware encoding failed with $encoder"
+        rm -f "$output_file" 2>/dev/null
+
+        # Try to diagnose the issue
+        echo "Diagnosing hardware encoding failure..."
+
+        # Test if encoder is actually available
+        if ! ffmpeg -hide_banner -f lavfi -i testsrc=duration=1:size=320x240:rate=1 -t 1 -c:v "$encoder" -f null - 2>/dev/null; then
+            echo "Encoder '$encoder' is not working properly"
+            echo "Try running: ./stripmeta_hw.sh --detect-encoders"
+        fi
+
+        # Check input file
+        if ! ffmpeg -i "$input_file" -t 1 -f null - 2>/dev/null; then
+            echo "Input file '$input_file' may be corrupted or unreadable"
+        fi
+
+        return 1
+    fi
+}
+
+# Modified strip_metadata function to use new output files
 strip_metadata() {
     local file="$1"
     local backup_dir="${2:-./backups}"
-    local file_type new_name temp_file
+    local file_type new_name
 
     if is_file_processed "$file"; then
         echo "Skipping already processed file: '$file'"
@@ -1021,56 +1035,53 @@ strip_metadata() {
 
     local success=false
     local method_used=""
-    local processed_file="$file"
 
-    # NEW: Check if hardware encoding is enabled - use it for ALL video processing
+    # Check if hardware encoding is enabled - creates NEW output file
     if [ "$use_hardware_encoding" = "true" ] && [[ "$file_type" =~ ^(mp4|mkv|avi|mov|m4v|webm|flv|mpg|mpeg)$ ]]; then
-        echo "🚀 Hardware encoding enabled - processing with hardware acceleration"
+        echo "Hardware encoding enabled - creating new encoded file"
         method_used="hardware_encoding"
 
-        local temp_hw_file="${file%.*}_hw_processed.${file##*.}"
-
-        if encode_video_hardware "$file" "$temp_hw_file" "$hardware_encoder_type" "$hardware_quality"; then
-            if mv "$temp_hw_file" "$file" 2>/dev/null; then
-                echo "✅ Hardware processed and metadata stripped: '$file'"
-                echo "   Encoder: ${hardware_encoders[$hardware_encoder_type]} ($hardware_encoder_type)"
-                echo "   Quality: $hardware_quality"
-                success=true
-            else
-                echo "❌ Failed to replace original with hardware processed file"
-                rm -f "$temp_hw_file" 2>/dev/null
-            fi
+        if encode_video_hardware "$file" "$hardware_encoder_type" "$hardware_quality"; then
+            echo "Hardware processed and metadata stripped: new file created"
+            echo "   Encoder: ${hardware_encoders[$hardware_encoder_type]} ($hardware_encoder_type)"
+            echo "   Quality: $hardware_quality"
+            success=true
         else
-            echo "⚠️ Hardware encoding failed, falling back to standard processing..."
-            rm -f "$temp_hw_file" 2>/dev/null
+            echo "Hardware encoding failed, falling back to standard processing..."
         fi
     fi
 
     # Standard processing if hardware encoding wasn't used or failed
     if [ "$success" = false ]; then
+        # Generate output filename for standard processing
+        local output_file="${file%.*}_processed.${file##*.}"
+        if [ -f "$output_file" ]; then
+            output_file="${file%.*}_processed_$(date +%Y%m%d_%H%M%S).${file##*.}"
+        fi
+
         if [[ "$actual_format" =~ matroska|mkv ]] || [ "$file_type" = "mkv" ]; then
             echo "Processing as MKV file (actual format: ${actual_format:-mkv})"
             method_used="mkvpropedit"
 
             if command -v mkvpropedit >/dev/null 2>&1; then
-                if mkvpropedit "$file" --delete title 2>/dev/null; then
-                    echo "✅ Processed MKV with mkvpropedit: '$file'"
-                    success=true
-                else
-                    echo "mkvpropedit failed, trying ffmpeg..."
+                # Copy file first, then process the copy
+                if cp "$file" "$output_file" 2>/dev/null; then
+                    if mkvpropedit "$output_file" --delete title 2>/dev/null; then
+                        echo "Processed MKV with mkvpropedit: '$output_file'"
+                        success=true
+                    else
+                        rm -f "$output_file" 2>/dev/null
+                        echo "mkvpropedit failed, trying ffmpeg..."
+                    fi
                 fi
             fi
 
             if [ "$success" = false ]; then
                 method_used="ffmpeg"
-                temp_file="${file%.*}_stripped.mkv"
-                if ffmpeg -y -nostdin -i "$file" -c copy -map_metadata -1 "$temp_file" 2>/dev/null; then
-                    if mv "$temp_file" "$file" 2>/dev/null; then
-                        echo "✅ Processed MKV with ffmpeg: '$file'"
-                        success=true
-                    fi
+                if ffmpeg -y -nostdin -i "$file" -c copy -map_metadata -1 "$output_file" 2>/dev/null; then
+                    echo "Processed MKV with ffmpeg: '$output_file'"
+                    success=true
                 fi
-                rm -f "$temp_file" 2>/dev/null
             fi
 
         elif [[ "$file_type" =~ ^(mp4|m4v|mov)$ ]] || [[ "$actual_format" =~ mp4|mov|ipod ]]; then
@@ -1078,62 +1089,51 @@ strip_metadata() {
 
             if [[ "$actual_format" =~ mp4|mov|ipod ]] && command -v exiftool >/dev/null 2>&1; then
                 method_used="exiftool"
-                if exiftool -overwrite_original -All= "$file" 2>/dev/null; then
-                    echo "✅ Processed MP4/M4V with exiftool: '$file'"
-                    success=true
-                else
-                    echo "exiftool failed, trying ffmpeg..."
+                if cp "$file" "$output_file" 2>/dev/null; then
+                    if exiftool -overwrite_original -All= "$output_file" 2>/dev/null; then
+                        echo "Processed MP4/M4V with exiftool: '$output_file'"
+                        success=true
+                    else
+                        rm -f "$output_file" 2>/dev/null
+                        echo "exiftool failed, trying ffmpeg..."
+                    fi
                 fi
             fi
 
             if [ "$success" = false ]; then
                 method_used="ffmpeg"
-                temp_file="${file%.*}_stripped.${file##*.}"
-                if ffmpeg -y -nostdin -i "$file" -c copy -map_metadata -1 "$temp_file" 2>/dev/null; then
-                    if mv "$temp_file" "$file" 2>/dev/null; then
-                        echo "✅ Processed with ffmpeg: '$file'"
-                        success=true
-                    fi
+                if ffmpeg -y -nostdin -i "$file" -c copy -map_metadata -1 "$output_file" 2>/dev/null; then
+                    echo "Processed with ffmpeg: '$output_file'"
+                    success=true
                 fi
-                rm -f "$temp_file" 2>/dev/null
             fi
 
         else
             echo "Processing generic video file"
             method_used="ffmpeg"
-            temp_file="${file%.*}_stripped.${file##*.}"
-            if ffmpeg -y -nostdin -i "$file" -c copy -map_metadata -1 "$temp_file" 2>/dev/null; then
-                if mv "$temp_file" "$file" 2>/dev/null; then
-                    echo "✅ Processed with ffmpeg: '$file'"
-                    success=true
-                fi
+            if ffmpeg -y -nostdin -i "$file" -c copy -map_metadata -1 "$output_file" 2>/dev/null; then
+                echo "Processed with ffmpeg: '$output_file'"
+                success=true
             fi
-            rm -f "$temp_file" 2>/dev/null
         fi
-    fi
 
-    # Rename after processing (if requested and successful)
-    if [ "$success" = "true" ] && [ "$renameext" = "true" ]; then
-        local current_ext="${file##*.}"
-        if [ "$current_ext" != "$newfileext" ]; then
-            new_name="${file%.*}.$newfileext"
-            if mv "$file" "$new_name" 2>/dev/null; then
-                processed_file="$new_name"
-                echo "Renamed after processing: '$file' -> '$new_name'"
-            else
-                echo "Warning: Failed to rename after processing: '$file'"
-                processed_file="$file"
-            fi
+        # Clean up failed output file
+        if [ "$success" = false ]; then
+            rm -f "$output_file" 2>/dev/null
         else
-            processed_file="$file"
+            # Log the new processed file
+            log_processed_file "$output_file" "processed" "$file_type"
+
+            # Optionally remove original file if backups are disabled
+            if [ "$backups" = "false" ]; then
+                echo "Removing original file (backups disabled): $file"
+                rm "$file" 2>/dev/null
+            fi
         fi
-    else
-        processed_file="$file"
     fi
 
     if [ "$success" = "true" ]; then
         echo "Success using method: $method_used"
-        log_processed_file "$processed_file" "processed" "$file_type"
         return 0
     else
         echo "All methods failed for: '$file'"
